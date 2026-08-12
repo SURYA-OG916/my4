@@ -19,7 +19,7 @@ Map<String, List<Transaction>> groupTransactionsByDate(List<Transaction> transac
     } else if (txDate == yesterday) {
       label = 'Yesterday';
     } else {
-      label = '${_monthName(txDate.month)} ${txDate.day}, ${txDate.year}';
+      label = '${txDate.day} ${_monthName(txDate.month)} ${txDate.year}';
     }
 
     grouped.putIfAbsent(label, () => []).add(tx);
