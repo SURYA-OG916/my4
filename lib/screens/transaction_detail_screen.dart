@@ -1,10 +1,34 @@
 import 'package:flutter/material.dart';
 import '../models/transaction.dart';
+import 'add_transaction_screen.dart';
 
 class TransactionDetailScreen extends StatelessWidget {
   final Transaction transaction;
+  final List<String> existingCategories;
 
-  const TransactionDetailScreen({super.key, required this.transaction});
+  const TransactionDetailScreen({
+    super.key,
+    required this.transaction,
+    required this.existingCategories,
+  });
+
+  Future<void> _editTransaction(BuildContext context) async {
+    final updated = await Navigator.push<Transaction>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AddTransactionScreen(
+          existingCategories: existingCategories,
+          existingTransaction: transaction,
+        ),
+      ),
+    );
+
+    if (updated != null && context.mounted) {
+      // Hand the updated transaction back to whoever pushed this detail
+      // screen (main.dart), so it can be merged into the master list.
+      Navigator.pop(context, updated);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -14,6 +38,13 @@ class TransactionDetailScreen extends StatelessWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Transaction Detail'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.edit),
+            tooltip: 'Edit',
+            onPressed: () => _editTransaction(context),
+          ),
+        ],
       ),
       body: Padding(
         padding: const EdgeInsets.all(20),
