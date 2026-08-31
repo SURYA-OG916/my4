@@ -36,10 +36,21 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
   List<Transaction> transactions = [];
   bool _isLoading = true;
 
+  // --- Search state ---
+  bool _isSearching = false;
+  String _searchQuery = '';
+  final TextEditingController _searchController = TextEditingController();
+
   @override
   void initState() {
     super.initState();
     _loadTransactions();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _loadTransactions() async {
@@ -165,6 +176,16 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
     );
   }
 
+  void _toggleSearch() {
+    setState(() {
+      _isSearching = !_isSearching;
+      if (!_isSearching) {
+        _searchQuery = '';
+        _searchController.clear();
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -176,18 +197,48 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
     // Build category list dynamically from the data ('All' + unique categories)
     final categories = ['All', ...{for (var t in transactions) t.category}];
 
-    // Apply filter before grouping
-    final filteredTransactions = selectedCategory == 'All'
+    // Apply category filter first
+    final categoryFiltered = selectedCategory == 'All'
         ? transactions
         : transactions.where((t) => t.category == selectedCategory).toList();
+
+    // Then apply search filter (title, source, category — case-insensitive)
+    final query = _searchQuery.trim().toLowerCase();
+    final filteredTransactions = query.isEmpty
+        ? categoryFiltered
+        : categoryFiltered.where((t) {
+            return t.title.toLowerCase().contains(query) ||
+                t.source.toLowerCase().contains(query) ||
+                t.category.toLowerCase().contains(query);
+          }).toList();
 
     final grouped = groupTransactionsByDate(filteredTransactions);
     final listItems = buildGroupedListItems(grouped);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Transactions'),
+        title: _isSearching
+            ? TextField(
+                controller: _searchController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  hintText: 'Search transactions...',
+                  border: InputBorder.none,
+                ),
+                style: const TextStyle(fontSize: 18),
+                onChanged: (value) {
+                  setState(() {
+                    _searchQuery = value;
+                  });
+                },
+              )
+            : const Text('Transactions'),
         actions: [
+          IconButton(
+            icon: Icon(_isSearching ? Icons.close : Icons.search),
+            tooltip: _isSearching ? 'Close search' : 'Search',
+            onPressed: _toggleSearch,
+          ),
           IconButton(
             icon: const Icon(Icons.pie_chart),
             tooltip: 'Category Summary',
@@ -211,7 +262,13 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
           const SizedBox(height: 8),
           Expanded(
             child: listItems.isEmpty
-                ? const Center(child: Text('No transactions in this category'))
+                ? Center(
+                    child: Text(
+                      query.isEmpty
+                          ? 'No transactions in this category'
+                          : 'No transactions match "$_searchQuery"',
+                    ),
+                  )
                 : ListView.builder(
                     itemCount: listItems.length,
                     itemBuilder: (context, index) {
