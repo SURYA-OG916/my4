@@ -1,6 +1,7 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/transaction.dart' as model;
+import '../models/budget.dart';
 
 class DatabaseHelper {
   DatabaseHelper._privateConstructor();
@@ -18,8 +19,9 @@ class DatabaseHelper {
     String path = join(await getDatabasesPath(), 'my4.db');
     return await openDatabase(
       path,
-      version: 1,
+      version: 2,
       onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
     );
   }
 
@@ -35,6 +37,23 @@ class DatabaseHelper {
         category TEXT NOT NULL
       )
     ''');
+    await db.execute('''
+      CREATE TABLE budgets (
+        category TEXT PRIMARY KEY,
+        limit_amount REAL NOT NULL
+      )
+    ''');
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('''
+        CREATE TABLE budgets (
+          category TEXT PRIMARY KEY,
+          limit_amount REAL NOT NULL
+        )
+      ''');
+    }
   }
 
   Future<int> insertTransaction(model.Transaction txn) async {
@@ -65,5 +84,31 @@ class DatabaseHelper {
     final db = await instance.database;
     final result = await db.query('transactions', orderBy: 'date DESC');
     return result.map((map) => model.Transaction.fromMap(map)).toList();
+  }
+
+  // --- Budget CRUD ---
+
+  Future<int> setBudget(Budget budget) async {
+    final db = await instance.database;
+    return await db.insert(
+      'budgets',
+      budget.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<int> deleteBudget(String category) async {
+    final db = await instance.database;
+    return await db.delete(
+      'budgets',
+      where: 'category = ?',
+      whereArgs: [category],
+    );
+  }
+
+  Future<List<Budget>> getAllBudgets() async {
+    final db = await instance.database;
+    final result = await db.query('budgets');
+    return result.map((map) => Budget.fromMap(map)).toList();
   }
 }
