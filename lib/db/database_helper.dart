@@ -5,6 +5,12 @@ import 'package:path/path.dart';
 import '../models/transaction.dart' as model;
 import '../models/budget.dart';
 
+/// How many calendar days apart two entries can be and still be considered
+/// a potential duplicate. Shared by DatabaseHelper.findPotentialDuplicates()
+/// and NeedsReviewStore.findMatching() so both stay in sync — change this
+/// one value to widen/narrow the window everywhere at once.
+const int dedupWindowDays = 1;
+
 class DatabaseHelper {
   DatabaseHelper._privateConstructor();
   static final DatabaseHelper instance = DatabaseHelper._privateConstructor();
@@ -104,13 +110,27 @@ class DatabaseHelper {
 
   // --- Duplicate detection ---
 
-  /// Finds existing transactions that match [amount], [type], and the same
-  /// calendar day as [date]. Deliberately does NOT match on title/source —
-  /// those vary too much between how an SMS parses a merchant name and how
-  /// a user manually types one, and fuzzy string matching there risks false
-  /// positives (flagging two genuinely different purchases as duplicates).
-  /// Amount + type + day is a tighter, lower-noise signal for "this may
-  /// already be in the ledger."
+  /// True if [a] and [b] fall within [dedupWindowDays] calendar days of
+  /// each other. Compares calendar days (not raw Duration), so an SMS
+  /// timestamped 11:58pm and a manual entry dated the next morning are
+  /// correctly treated as 1 day apart, not 0.
+  bool _isWithinDedupWindow(DateTime a, DateTime b) {
+    final aDay = DateTime(a.year, a.month, a.day);
+    final bDay = DateTime(b.year, b.month, b.day);
+    final diff = aDay.difference(bDay).inDays.abs();
+    return diff <= dedupWindowDays;
+  }
+
+  /// Finds existing transactions that match [amount], [type], and fall
+  /// within [dedupWindowDays] calendar days of [date]. Deliberately does
+  /// NOT match on title/source — those vary too much between how an SMS
+  /// parses a merchant name and how a user manually types one, and fuzzy
+  /// string matching there risks false positives (flagging two genuinely
+  /// different purchases as duplicates). Amount + type + a tight date
+  /// window is a lower-noise signal for "this may already be in the
+  /// ledger" — the window (rather than exact-day equality) also catches
+  /// cases where an SMS timestamp and a manually-entered date land on
+  /// adjacent calendar days for what's really the same transaction.
   Future<List<model.Transaction>> findPotentialDuplicates({
     required double amount,
     required model.TransactionType type,
@@ -126,11 +146,7 @@ class DatabaseHelper {
     final candidates = rows.map((r) => model.Transaction.fromMap(r)).toList();
 
     return candidates
-        .where((t) =>
-            t.type == type &&
-            t.date.year == date.year &&
-            t.date.month == date.month &&
-            t.date.day == date.day)
+        .where((t) => t.type == type && _isWithinDedupWindow(t.date, date))
         .toList();
   }
 

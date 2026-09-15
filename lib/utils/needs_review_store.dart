@@ -1,5 +1,6 @@
 import '../models/transaction.dart';
 import '../utils/sms_parser.dart';
+import '../db/database_helper.dart' show dedupWindowDays;
 
 /// In-memory, app-lifetime store mirroring SmsReaderScreen's current
 /// needs-review list. Needs-review items are transient by nature (rebuilt
@@ -25,13 +26,25 @@ class NeedsReviewStore {
     _items = List.from(items);
   }
 
+  /// True if [a] and [b] fall within [dedupWindowDays] calendar days of
+  /// each other. Mirrors DatabaseHelper's window check exactly, using the
+  /// same shared constant, so a needs-review match and a real-transaction
+  /// match never disagree about how close is "close enough."
+  bool _isWithinDedupWindow(DateTime a, DateTime b) {
+    final aDay = DateTime(a.year, a.month, a.day);
+    final bDay = DateTime(b.year, b.month, b.day);
+    final diff = aDay.difference(bDay).inDays.abs();
+    return diff <= dedupWindowDays;
+  }
+
   /// Needs-review entries whose recovered partial data matches [amount],
-  /// [type], and the same calendar day as [date]. Mirrors the same
-  /// amount+type+day signal DatabaseHelper.findPotentialDuplicates() uses
-  /// against real transactions — deliberately not matching on merchant
-  /// text, for the same false-positive reasons. Entries where the parser
-  /// couldn't recover an amount/type/date never match — there's nothing
-  /// concrete to compare against.
+  /// [type], and fall within [dedupWindowDays] calendar days of [date].
+  /// Mirrors the same amount+type+date-window signal
+  /// DatabaseHelper.findPotentialDuplicates() uses against real
+  /// transactions — deliberately not matching on merchant text, for the
+  /// same false-positive reasons. Entries where the parser couldn't
+  /// recover an amount/type/date never match — there's nothing concrete
+  /// to compare against.
   List<SmsParseResult> findMatching({
     required double amount,
     required TransactionType type,
@@ -45,9 +58,7 @@ class NeedsReviewStore {
       }
       return r.partialAmount == amount &&
           r.partialType == type &&
-          r.smsDate!.year == date.year &&
-          r.smsDate!.month == date.month &&
-          r.smsDate!.day == date.day;
+          _isWithinDedupWindow(r.smsDate!, date);
     }).toList();
   }
 }
