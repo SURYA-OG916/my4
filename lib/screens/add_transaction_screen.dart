@@ -5,10 +5,18 @@ class AddTransactionScreen extends StatefulWidget {
   final List<String> existingCategories;
   final Transaction? existingTransaction;
 
+  /// When true, [existingTransaction] is treated as a prefilled draft
+  /// (e.g. partial data recovered from an unparseable SMS) rather than
+  /// a real transaction being edited. The screen still uses its id/fields
+  /// to prefill the form, but shows "Add"/"Save" wording instead of
+  /// "Edit"/"Update".
+  final bool isDraft;
+
   const AddTransactionScreen({
     super.key,
     required this.existingCategories,
     this.existingTransaction,
+    this.isDraft = false,
   });
 
   @override
@@ -29,7 +37,8 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   static const String _otherOptionValue = '__other__';
   final TextEditingController _customCategoryController = TextEditingController();
 
-  bool get _isEditing => widget.existingTransaction != null;
+  bool get _isEditing =>
+      widget.existingTransaction != null && !widget.isDraft;
 
   @override
   void initState() {
@@ -40,7 +49,9 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     _titleController = TextEditingController(text: existing?.title ?? '');
     _sourceController = TextEditingController(text: existing?.source ?? '');
     _amountController = TextEditingController(
-      text: existing != null ? existing.amount.toString() : '',
+      text: existing != null && existing.amount > 0
+          ? existing.amount.toString()
+          : '',
     );
     _selectedType = existing?.type ?? TransactionType.debit;
     _selectedDate = existing?.date ?? DateTime.now();
@@ -123,7 +134,13 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isEditing ? 'Edit Transaction' : 'Add Transaction'),
+        title: Text(
+          _isEditing
+              ? 'Edit Transaction'
+              : (widget.isDraft
+                  ? 'Add Transaction (from SMS)'
+                  : 'Add Transaction'),
+        ),
       ),
       body: Padding(
         padding: const EdgeInsets.all(16),

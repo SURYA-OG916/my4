@@ -3,10 +3,16 @@ import 'models/transaction.dart';
 import 'db/database_helper.dart';
 import 'summary_header.dart';
 import 'utils/transaction_grouping.dart';
+import 'utils/date_range_helper.dart';
+import 'utils/category_helper.dart';
+import 'utils/duplicate_helper.dart';
+import 'utils/needs_review_store.dart';
 import 'screens/transaction_detail_screen.dart';
 import 'screens/add_transaction_screen.dart';
 import 'screens/category_summary_screen.dart';
+import 'screens/sms_reader_screen.dart';
 import 'widgets/category_filter_chips.dart';
+import 'widgets/month_selector.dart';
 
 void main() {
   runApp(const MyApp());
@@ -36,6 +42,9 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
   List<Transaction> transactions = [];
   bool _isLoading = true;
 
+  // --- Month filter state ---
+  DateTime _selectedMonth = DateTime(DateTime.now().year, DateTime.now().month, 1);
+
   // --- Search state ---
   bool _isSearching = false;
   String _searchQuery = '';
@@ -62,7 +71,7 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
   }
 
   Future<void> _openAddTransactionScreen() async {
-    final categories = ['All', ...{for (var t in transactions) t.category}];
+    final categories = categoriesFrom(transactions);
 
     final result = await Navigator.push<Transaction>(
       context,
@@ -74,6 +83,32 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
     );
 
     if (result != null) {
+      final duplicates = await DatabaseHelper.instance.findPotentialDuplicates(
+        amount: result.amount,
+        type: result.type,
+        date: result.date,
+      );
+
+      // Also check unresolved SMS still sitting in Needs Review — previously
+      // only the database was checked, so a manual "+" add for the same
+      // transaction a pending needs-review SMS represents went through with
+      // no warning at all.
+      final needsReviewDuplicates = NeedsReviewStore.instance.findMatching(
+        amount: result.amount,
+        type: result.type,
+        date: result.date,
+      );
+
+      if (duplicates.isNotEmpty || needsReviewDuplicates.isNotEmpty) {
+        if (!mounted) return;
+        final proceed = await confirmPossibleDuplicate(
+          context,
+          existingDuplicates: duplicates,
+          needsReviewDuplicates: needsReviewDuplicates,
+        );
+        if (!proceed) return;
+      }
+
       await DatabaseHelper.instance.insertTransaction(result);
       setState(() {
         transactions.add(result);
@@ -81,13 +116,24 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
     }
   }
 
-  void _openCategorySummary() {
+  void _openCategorySummary(List<Transaction> monthFiltered) {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => CategorySummaryScreen(transactions: transactions),
+        builder: (context) => CategorySummaryScreen(
+          transactions: monthFiltered,
+          monthLabel: _monthLabel(_selectedMonth),
+        ),
       ),
     );
+  }
+
+  String _monthLabel(DateTime month) {
+    const monthNames = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December'
+    ];
+    return '${monthNames[month.month - 1]} ${month.year}';
   }
 
   Future<bool> _confirmDelete(Transaction txn) async {
@@ -119,7 +165,7 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
   }
 
   Future<void> _showTransactionOptions(Transaction txn) async {
-    final categories = ['All', ...{for (var t in transactions) t.category}];
+    final categories = categoriesFrom(transactions);
 
     await showModalBottomSheet(
       context: context,
@@ -186,6 +232,12 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
     });
   }
 
+  void _onMonthChanged(DateTime newMonth) {
+    setState(() {
+      _selectedMonth = newMonth;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -194,13 +246,19 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
       );
     }
 
-    // Build category list dynamically from the data ('All' + unique categories)
-    final categories = ['All', ...{for (var t in transactions) t.category}];
+    // Apply month filter first — everything downstream (header, chips, list,
+    // category summary) is scoped to the selected month.
+    final monthFiltered = transactions
+        .where((t) => DateRangeHelper.isInMonth(t.date, _selectedMonth))
+        .toList();
 
-    // Apply category filter first
+    // Build category list dynamically from the month-filtered data
+    final categories = categoriesFrom(monthFiltered);
+
+    // Apply category filter
     final categoryFiltered = selectedCategory == 'All'
-        ? transactions
-        : transactions.where((t) => t.category == selectedCategory).toList();
+        ? monthFiltered
+        : monthFiltered.where((t) => t.category == selectedCategory).toList();
 
     // Then apply search filter (title, source, category — case-insensitive)
     final query = _searchQuery.trim().toLowerCase();
@@ -242,13 +300,28 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
           IconButton(
             icon: const Icon(Icons.pie_chart),
             tooltip: 'Category Summary',
-            onPressed: _openCategorySummary,
+            onPressed: () => _openCategorySummary(monthFiltered),
+          ),
+          IconButton(
+            icon: const Icon(Icons.sms_outlined),
+            tooltip: 'SMS Reader',
+            onPressed: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SmsReaderScreen()),
+              );
+              await _loadTransactions();
+            },
           ),
         ],
       ),
       body: Column(
         children: [
-          SummaryHeader(transactions: transactions),
+          MonthSelector(
+            selectedMonth: _selectedMonth,
+            onMonthChanged: _onMonthChanged,
+          ),
+          SummaryHeader(transactions: monthFiltered),
           const SizedBox(height: 8),
           CategoryFilterChips(
             categories: categories,

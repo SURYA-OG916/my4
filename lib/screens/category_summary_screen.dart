@@ -5,10 +5,12 @@ import 'budget_settings_screen.dart';
 
 class CategorySummaryScreen extends StatefulWidget {
   final List<Transaction> transactions;
+  final String? monthLabel;
 
   const CategorySummaryScreen({
     super.key,
     required this.transactions,
+    this.monthLabel,
   });
 
   @override
@@ -89,7 +91,11 @@ class _CategorySummaryScreenState extends State<CategorySummaryScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Category Summary'),
+        title: Text(
+          widget.monthLabel != null
+              ? 'Category Summary — ${widget.monthLabel}'
+              : 'Category Summary',
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.tune),
