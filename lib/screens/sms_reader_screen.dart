@@ -119,8 +119,9 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
   /// diverted duplicates nor true failures are marked processed — an
   /// unresolved needs-review SMS must keep reappearing on every refresh
   /// until the user actually saves a transaction for it (see
-  /// [_openNeedsReviewItem]), otherwise it gets silently marked "done" and
-  /// vanishes without ever being resolved.
+  /// [_openNeedsReviewItem]) or explicitly dismisses it (see
+  /// [_dismissNeedsReviewItem]), otherwise it gets silently marked "done"
+  /// and vanishes without ever being resolved.
   Future<void> _parseAndInsertTransactions(List<SmsMessage> messages) async {
     final flagged = messages.where(_looksLikeTransactionSms).toList();
 
@@ -254,15 +255,98 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
     );
     await DatabaseHelper.instance.markSmsProcessed(resolvedHash);
 
-    // Any OTHER needs-review entries now representing the same real
-    // transaction must be cleared too, or the user could resolve them
-    // separately later and insert a genuine duplicate. Two cases:
-    //   1. Same SMS hash (identical sender+body+date) — the old check.
-    //   2. A DIFFERENT SMS (e.g. a second bank notification for the same
-    //      payment, different sender — like an AXISBK message alongside
-    //      an HDFCBK one) whose recovered amount/type/day matches what
-    //      was just saved. This is the case that was previously missed:
-    //      different hash, same underlying transaction.
+    await _clearMatchingNeedsReview(result, resolvedHash,
+        amount: saved.amount, type: saved.type, date: saved.date);
+
+    // The saved transaction may have introduced a new category (e.g. a
+    // freshly typed "Other" value) — refresh so it's available next time.
+    await _loadExistingCategories();
+  }
+
+  /// Dismisses a needs-review item WITHOUT inserting a transaction —
+  /// for cases like "this SMS is for something I already added manually"
+  /// (a true duplicate) or "this isn't a real transaction I need to
+  /// track". Marks the SMS (and any other needs-review entries matching
+  /// the same recovered amount/type/day) as processed so none of them
+  /// keep reappearing, then removes them from the list. Shows a Snackbar
+  /// with an Undo action so an accidental dismiss can be reversed.
+  Future<void> _dismissNeedsReviewItem(SmsParseResult result) async {
+    final hash = DatabaseHelper.smsHash(
+      sender: result.sender,
+      body: result.rawBody,
+      dateMillis: result.smsDate?.millisecondsSinceEpoch,
+    );
+
+    // Capture exactly which entries get cleared (including matches by
+    // amount/type/day, e.g. the twin ₹777 SMS) so Undo can restore all
+    // of them, not just the one that was tapped.
+    final cleared = await _clearMatchingNeedsReview(
+      result,
+      hash,
+      amount: result.partialAmount,
+      type: result.partialType,
+      date: result.smsDate,
+      alsoMarkPrimary: true,
+    );
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          cleared.length > 1
+              ? 'Dismissed ${cleared.length} matching messages'
+              : 'Dismissed',
+        ),
+        action: SnackBarAction(
+          label: 'UNDO',
+          onPressed: () => _undoDismiss(cleared),
+        ),
+        duration: const Duration(seconds: 5),
+      ),
+    );
+  }
+
+  /// Reverses a dismissal: unmarks each cleared SMS as processed and
+  /// re-inserts them into [_needsReview] so they reappear immediately
+  /// without needing a manual refresh.
+  Future<void> _undoDismiss(List<SmsParseResult> cleared) async {
+    for (final r in cleared) {
+      final rHash = DatabaseHelper.smsHash(
+        sender: r.sender,
+        body: r.rawBody,
+        dateMillis: r.smsDate?.millisecondsSinceEpoch,
+      );
+      await DatabaseHelper.instance.unmarkSmsProcessed(rHash);
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _needsReview.addAll(cleared);
+    });
+    NeedsReviewStore.instance.setAll(_needsReview);
+  }
+
+  /// Shared cleanup: marks every needs-review entry that represents the
+  /// same underlying transaction as [resolvedHash]/[amount]/[type]/[date]
+  /// as processed, and removes them all from [_needsReview]. Used by both
+  /// the "save a real transaction" path and the "dismiss, no transaction"
+  /// path so a duplicate SMS from a different sender (e.g. AXISBK vs
+  /// HDFCBK for the same payment) doesn't keep lingering after its twin
+  /// has been resolved either way. Returns the list of entries that were
+  /// cleared, so callers (like dismiss) can offer an Undo.
+  ///
+  /// [alsoMarkPrimary]: when true, [resolvedHash] itself is guaranteed to
+  /// be included/marked even if it isn't found in [_needsReview] by hash
+  /// (defensive — normally it always is, since it's the tapped item).
+  Future<List<SmsParseResult>> _clearMatchingNeedsReview(
+    SmsParseResult result,
+    String resolvedHash, {
+    double? amount,
+    TransactionType? type,
+    DateTime? date,
+    bool alsoMarkPrimary = false,
+  }) async {
     final toClear = _needsReview.where((r) {
       final rHash = DatabaseHelper.smsHash(
         sender: r.sender,
@@ -270,16 +354,23 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
         dateMillis: r.smsDate?.millisecondsSinceEpoch,
       );
       final sameHash = rHash == resolvedHash;
-      final sameTransaction = r.partialAmount != null &&
+      final sameTransaction = amount != null &&
+          type != null &&
+          date != null &&
+          r.partialAmount != null &&
           r.partialType != null &&
           r.smsDate != null &&
-          r.partialAmount == saved.amount &&
-          r.partialType == saved.type &&
-          r.smsDate!.year == saved.date.year &&
-          r.smsDate!.month == saved.date.month &&
-          r.smsDate!.day == saved.date.day;
+          r.partialAmount == amount &&
+          r.partialType == type &&
+          r.smsDate!.year == date.year &&
+          r.smsDate!.month == date.month &&
+          r.smsDate!.day == date.day;
       return sameHash || sameTransaction;
     }).toList();
+
+    if (alsoMarkPrimary && !toClear.contains(result)) {
+      toClear.add(result);
+    }
 
     for (final r in toClear) {
       final rHash = DatabaseHelper.smsHash(
@@ -290,15 +381,13 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
       await DatabaseHelper.instance.markSmsProcessed(rHash);
     }
 
-    if (!mounted) return;
+    if (!mounted) return toClear;
     setState(() {
       _needsReview.removeWhere((r) => toClear.contains(r));
     });
     NeedsReviewStore.instance.setAll(_needsReview);
 
-    // The saved transaction may have introduced a new category (e.g. a
-    // freshly typed "Other" value) — refresh so it's available next time.
-    await _loadExistingCategories();
+    return toClear;
   }
 
   @override
@@ -308,7 +397,7 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('SMS Reader (Day 19)'),
+        title: const Text('SMS Reader'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -379,7 +468,8 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
           ..._needsReview.map(
             (result) => _NeedsReviewTile(
               result: result,
-              onTap: () => _openNeedsReviewItem(result),
+              onAdd: () => _openNeedsReviewItem(result),
+              onDismiss: () => _dismissNeedsReviewItem(result),
             ),
           ),
         ],
@@ -408,9 +498,14 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
 
 class _NeedsReviewTile extends StatelessWidget {
   final SmsParseResult result;
-  final VoidCallback onTap;
+  final VoidCallback onAdd;
+  final VoidCallback onDismiss;
 
-  const _NeedsReviewTile({required this.result, required this.onTap});
+  const _NeedsReviewTile({
+    required this.result,
+    required this.onAdd,
+    required this.onDismiss,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -423,8 +518,21 @@ class _NeedsReviewTile extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
       ),
       isThreeLine: true,
-      trailing: const Icon(Icons.chevron_right),
-      onTap: onTap,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          IconButton(
+            icon: const Icon(Icons.add_circle_outline, color: Colors.green),
+            tooltip: 'Add as transaction',
+            onPressed: onAdd,
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, color: Colors.grey),
+            tooltip: 'Dismiss (already added / not a transaction)',
+            onPressed: onDismiss,
+          ),
+        ],
+      ),
     );
   }
 }

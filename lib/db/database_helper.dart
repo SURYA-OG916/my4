@@ -210,4 +210,16 @@ class DatabaseHelper {
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
   }
+
+  /// Reverses [markSmsProcessed] — used to undo a needs-review dismissal
+  /// (or a resolved add) so the SMS reappears on the next refresh instead
+  /// of staying silently marked "done".
+  Future<void> unmarkSmsProcessed(String smsHash) async {
+    final db = await instance.database;
+    await db.delete(
+      'processed_sms',
+      where: 'sms_hash = ?',
+      whereArgs: [smsHash],
+    );
+  }
 }
