@@ -34,19 +34,45 @@ class CategoryMatcher {
     // Income (rarely a "merchant" but VPAs sometimes carry these words)
     'salary': 'Income',
     'refund': 'Income',
+
+    // Bank-adjacent transaction types (surfaced now that bank context
+    // is passed in — these show up as the "merchant" text itself on
+    // EMI/ATM/fee-type SMS, not as a real payee)
+    'emi': 'EMI',
+    'loan': 'EMI',
+    'atm': 'ATM Withdrawal',
+    'cash withdrawal': 'ATM Withdrawal',
+    'interest': 'Bank Charges',
+    'annual fee': 'Bank Charges',
+    'late fee': 'Bank Charges',
+    'penalty': 'Bank Charges',
+    'gst': 'Bank Charges',
   };
 
   static const String defaultCategory = 'Other';
+  static const String bankTransferCategory = 'Bank Transfer';
 
   /// Returns a best-guess category for a merchant name or VPA string.
-  /// Falls back to [defaultCategory] if nothing matches.
-  static String categorize(String merchantOrVpa) {
+  ///
+  /// [bankName], if provided, is used to detect the case where no real
+  /// merchant could be extracted from an SMS and [merchantOrVpa] is just
+  /// the bank name itself (sms_parser.dart's fallback). That case is
+  /// tagged [bankTransferCategory] instead of falling through to
+  /// [defaultCategory], since it's almost always a bank transfer, ATM
+  /// withdrawal, or fee rather than a genuinely uncategorizable spend.
+  static String categorize(String merchantOrVpa, {String? bankName}) {
     final String normalized = merchantOrVpa.toLowerCase();
 
     for (final entry in _keywordToCategory.entries) {
       if (normalized.contains(entry.key)) {
         return entry.value;
       }
+    }
+
+    if (bankName != null &&
+        bankName.isNotEmpty &&
+        normalized == bankName.toLowerCase()) {
+      return bankTransferCategory;
     }
 
     return defaultCategory;

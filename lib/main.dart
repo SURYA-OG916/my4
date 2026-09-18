@@ -11,6 +11,9 @@ import 'screens/transaction_detail_screen.dart';
 import 'screens/add_transaction_screen.dart';
 import 'screens/category_summary_screen.dart';
 import 'screens/sms_reader_screen.dart';
+import 'screens/trends_screen.dart';
+import 'screens/export_screen.dart';
+import 'screens/recurring_screen.dart';
 import 'widgets/category_filter_chips.dart';
 import 'widgets/month_selector.dart';
 
@@ -124,6 +127,15 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
           transactions: monthFiltered,
           monthLabel: _monthLabel(_selectedMonth),
         ),
+      ),
+    );
+  }
+
+  void _openRecurringScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => RecurringScreen(transactions: transactions),
       ),
     );
   }
@@ -301,6 +313,36 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
             icon: const Icon(Icons.pie_chart),
             tooltip: 'Category Summary',
             onPressed: () => _openCategorySummary(monthFiltered),
+          ),
+          IconButton(
+            icon: const Icon(Icons.show_chart),
+            tooltip: 'Spending Trends',
+            onPressed: () async {
+              final pickedMonth = await Navigator.push<DateTime>(
+                context,
+                MaterialPageRoute(builder: (context) => const TrendsScreen()),
+              );
+              if (pickedMonth != null) {
+                setState(() {
+                  _selectedMonth = DateTime(pickedMonth.year, pickedMonth.month, 1);
+                });
+              }
+            },
+          ),
+          IconButton(
+            icon: const Icon(Icons.repeat),
+            tooltip: 'Recurring',
+            onPressed: _openRecurringScreen,
+          ),
+          IconButton(
+            icon: const Icon(Icons.file_download_outlined),
+            tooltip: 'Export Data',
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const ExportScreen()),
+              );
+            },
           ),
           IconButton(
             icon: const Icon(Icons.sms_outlined),

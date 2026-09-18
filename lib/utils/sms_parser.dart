@@ -158,7 +158,7 @@ class SmsParser {
     }
 
     final String merchant = merchantGuess ?? bankName;
-    final String category = CategoryMatcher.categorize(merchant);
+    final String category = CategoryMatcher.categorize(merchant, bankName: bankName);
 
     final transaction = Transaction(
       id: DateTime.now().millisecondsSinceEpoch.toString() +
