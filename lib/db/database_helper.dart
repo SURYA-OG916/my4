@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:path/path.dart';
 import '../models/transaction.dart' as model;
 import '../models/budget.dart';
+import '../models/bank_account.dart';
 
 /// How many calendar days apart two entries can be and still be considered
 /// a potential duplicate. Shared by DatabaseHelper.findPotentialDuplicates()
@@ -27,7 +28,7 @@ class DatabaseHelper {
     String path = join(await getDatabasesPath(), 'my4.db');
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -57,6 +58,7 @@ class DatabaseHelper {
         processed_at TEXT NOT NULL
       )
     ''');
+    await _createV4Tables(db);
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -76,6 +78,40 @@ class DatabaseHelper {
         )
       ''');
     }
+    if (oldVersion < 4) {
+      await _createV4Tables(db);
+    }
+  }
+
+  /// Version 4: accounts, "my names" (for own-account transfer detection),
+  /// which UPI app uses which account, and simple key/value settings
+  /// (currently the bank balance snapshot).
+  Future<void> _createV4Tables(Database db) async {
+    await db.execute('''
+      CREATE TABLE accounts (
+        id TEXT PRIMARY KEY,
+        bank TEXT NOT NULL,
+        last4 TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE my_names (
+        name TEXT PRIMARY KEY
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE app_links (
+        app_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        PRIMARY KEY (app_key, account_id)
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE app_settings (
+        setting_key TEXT PRIMARY KEY,
+        setting_value TEXT NOT NULL
+      )
+    ''');
   }
 
   Future<int> insertTransaction(model.Transaction txn) async {
@@ -220,6 +256,116 @@ class DatabaseHelper {
       'processed_sms',
       where: 'sms_hash = ?',
       whereArgs: [smsHash],
+    );
+  }
+
+  // --- Bank accounts ---
+
+  Future<int> insertAccount(BankAccount account) async {
+    final db = await instance.database;
+    return await db.insert('accounts', account.toMap());
+  }
+
+  /// Also removes the account from any UPI app links.
+  Future<void> deleteAccount(String id) async {
+    final db = await instance.database;
+    await db.delete('accounts', where: 'id = ?', whereArgs: [id]);
+    await db.delete('app_links', where: 'account_id = ?', whereArgs: [id]);
+  }
+
+  Future<List<BankAccount>> getAllAccounts() async {
+    final db = await instance.database;
+    final rows = await db.query('accounts', orderBy: 'bank ASC, last4 ASC');
+    return rows.map((r) => BankAccount.fromMap(r)).toList();
+  }
+
+  // --- My names (own-account transfer detection) ---
+
+  Future<void> addMyName(String name) async {
+    final db = await instance.database;
+    await db.insert(
+      'my_names',
+      {'name': name},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  Future<void> deleteMyName(String name) async {
+    final db = await instance.database;
+    await db.delete('my_names', where: 'name = ?', whereArgs: [name]);
+  }
+
+  Future<List<String>> getMyNames() async {
+    final db = await instance.database;
+    final rows = await db.query('my_names', orderBy: 'name ASC');
+    return rows.map((r) => r['name'] as String).toList();
+  }
+
+  // --- UPI app <-> account links ---
+
+  /// app package name -> set of linked account ids.
+  Future<Map<String, Set<String>>> getAppLinks() async {
+    final db = await instance.database;
+    final rows = await db.query('app_links');
+    final links = <String, Set<String>>{};
+    for (final r in rows) {
+      final app = r['app_key'] as String;
+      final account = r['account_id'] as String;
+      links.putIfAbsent(app, () => <String>{}).add(account);
+    }
+    return links;
+  }
+
+  Future<void> setAppLink({
+    required String appKey,
+    required String accountId,
+    required bool linked,
+  }) async {
+    final db = await instance.database;
+    if (linked) {
+      await db.insert(
+        'app_links',
+        {'app_key': appKey, 'account_id': accountId},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    } else {
+      await db.delete(
+        'app_links',
+        where: 'app_key = ? AND account_id = ?',
+        whereArgs: [appKey, accountId],
+      );
+    }
+  }
+
+  // --- Key/value settings ---
+
+  Future<String?> getSetting(String key) async {
+    final db = await instance.database;
+    final rows = await db.query(
+      'app_settings',
+      where: 'setting_key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return rows.first['setting_value'] as String?;
+  }
+
+  Future<void> setSetting(String key, String value) async {
+    final db = await instance.database;
+    await db.insert(
+      'app_settings',
+      {'setting_key': key, 'setting_value': value},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> deleteSetting(String key) async {
+    final db = await instance.database;
+    await db.delete(
+      'app_settings',
+      where: 'setting_key = ?',
+      whereArgs: [key],
     );
   }
 }

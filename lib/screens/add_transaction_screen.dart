@@ -92,7 +92,17 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     );
     if (picked != null) {
       setState(() {
-        _selectedDate = picked;
+        // Keep the time of day that was already selected. A date-only value
+        // would be midnight, which counts as "before" a bank balance you set
+        // earlier today and would be left out of it.
+        _selectedDate = DateTime(
+          picked.year,
+          picked.month,
+          picked.day,
+          _selectedDate.hour,
+          _selectedDate.minute,
+          _selectedDate.second,
+        );
       });
     }
   }

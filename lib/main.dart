@@ -7,15 +7,22 @@ import 'utils/date_range_helper.dart';
 import 'utils/category_helper.dart';
 import 'utils/duplicate_helper.dart';
 import 'utils/needs_review_store.dart';
+import 'utils/notification_ingestor.dart';
+import 'utils/balance_helper.dart';
+import 'utils/category_matcher.dart';
+import 'utils/transfer_helper.dart';
 import 'screens/transaction_detail_screen.dart';
 import 'screens/add_transaction_screen.dart';
 import 'screens/category_summary_screen.dart';
 import 'screens/sms_reader_screen.dart';
+import 'screens/notification_reader_screen.dart';
+import 'screens/accounts_screen.dart';
 import 'screens/trends_screen.dart';
 import 'screens/export_screen.dart';
 import 'screens/recurring_screen.dart';
 import 'widgets/category_filter_chips.dart';
 import 'widgets/month_selector.dart';
+import 'widgets/quick_add_sheet.dart';
 
 void main() {
   runApp(const MyApp());
@@ -40,10 +47,14 @@ class TransactionListScreen extends StatefulWidget {
   State<TransactionListScreen> createState() => _TransactionListScreenState();
 }
 
-class _TransactionListScreenState extends State<TransactionListScreen> {
+class _TransactionListScreenState extends State<TransactionListScreen>
+    with WidgetsBindingObserver {
   String selectedCategory = 'All';
   List<Transaction> transactions = [];
   bool _isLoading = true;
+
+  // Bank balance the user set on the Accounts screen (null = not set).
+  BalanceSnapshot? _balanceSnapshot;
 
   // --- Month filter state ---
   DateTime _selectedMonth = DateTime(DateTime.now().year, DateTime.now().month, 1);
@@ -56,19 +67,52 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
   @override
   void initState() {
     super.initState();
-    _loadTransactions();
+    WidgetsBinding.instance.addObserver(this);
+    _startUp();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
     super.dispose();
   }
 
+  // When the app comes back to the foreground, pick up any UPI-app
+  // notifications captured in the background.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _syncNotifications();
+    }
+  }
+
+  Future<void> _startUp() async {
+    try {
+      await NotificationIngestor.run();
+    } catch (_) {
+      // Notification capture is optional; never block the app on it.
+    }
+    await _loadTransactions();
+  }
+
+  Future<void> _syncNotifications() async {
+    try {
+      final result = await NotificationIngestor.run();
+      if (result.addedCount > 0 && mounted) {
+        await _loadTransactions();
+      }
+    } catch (_) {
+      // Notification capture is optional.
+    }
+  }
+
   Future<void> _loadTransactions() async {
     final loaded = await DatabaseHelper.instance.getAllTransactions();
+    final snapshot = await BalanceHelper.loadSnapshot();
     setState(() {
       transactions = loaded;
+      _balanceSnapshot = snapshot;
       _isLoading = false;
     });
   }
@@ -119,6 +163,55 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
     }
   }
 
+  // Fast path for payments the UPI apps never notify about (money you send).
+  Future<void> _openQuickAdd() async {
+    final quick = await showQuickAddSheet(context);
+    if (quick == null) return;
+
+    final ownNames = await DatabaseHelper.instance.getMyNames();
+    final category = matchesOwnName(quick.title, ownNames)
+        ? transferCategory
+        : CategoryMatcher.categorize(quick.title);
+
+    final now = DateTime.now();
+    final txn = Transaction(
+      id: now.millisecondsSinceEpoch.toString(),
+      title: quick.title,
+      source: quick.source,
+      amount: quick.amount,
+      date: now,
+      type: quick.type,
+      category: category,
+    );
+
+    final duplicates = await DatabaseHelper.instance.findPotentialDuplicates(
+      amount: txn.amount,
+      type: txn.type,
+      date: txn.date,
+    );
+    final needsReviewDuplicates = NeedsReviewStore.instance.findMatching(
+      amount: txn.amount,
+      type: txn.type,
+      date: txn.date,
+    );
+
+    if (duplicates.isNotEmpty || needsReviewDuplicates.isNotEmpty) {
+      if (!mounted) return;
+      final proceed = await confirmPossibleDuplicate(
+        context,
+        existingDuplicates: duplicates,
+        needsReviewDuplicates: needsReviewDuplicates,
+      );
+      if (!proceed) return;
+    }
+
+    await DatabaseHelper.instance.insertTransaction(txn);
+    if (!mounted) return;
+    setState(() {
+      transactions.add(txn);
+    });
+  }
+
   void _openCategorySummary(List<Transaction> monthFiltered) {
     Navigator.push(
       context,
@@ -137,6 +230,35 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
       MaterialPageRoute(
         builder: (context) => RecurringScreen(transactions: transactions),
       ),
+    );
+  }
+
+  Future<void> _openNotificationReader() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const NotificationReaderScreen(),
+      ),
+    );
+    // The screen may have added transactions (auto-ingest or "Add anyway").
+    await _loadTransactions();
+  }
+
+  Future<void> _openAccountsScreen() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const AccountsScreen(),
+      ),
+    );
+    // Balance, names and transfer tagging may have changed.
+    await _loadTransactions();
+  }
+
+  void _openExportScreen() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const ExportScreen()),
     );
   }
 
@@ -264,6 +386,29 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
         .where((t) => DateRangeHelper.isInMonth(t.date, _selectedMonth))
         .toList();
 
+    // Real bank balance, based on the snapshot the user set (transfers ignored):
+    //  - current month: today's balance ("Balance")
+    //  - past month:    the balance at the end of that month ("Closing")
+    //  - future month:  none, the header falls back to "Net"
+    final snapshot = _balanceSnapshot;
+    final now = DateTime.now();
+    final selectedIndex = _selectedMonth.year * 12 + _selectedMonth.month;
+    final currentIndex = now.year * 12 + now.month;
+    double? bankBalance;
+    String balanceLabel = 'Balance';
+    if (snapshot != null) {
+      if (selectedIndex == currentIndex) {
+        bankBalance = BalanceHelper.currentBalance(snapshot, transactions);
+      } else if (selectedIndex < currentIndex) {
+        bankBalance = BalanceHelper.balanceAt(
+          snapshot,
+          transactions,
+          BalanceHelper.endOfMonth(_selectedMonth),
+        );
+        balanceLabel = 'Closing';
+      }
+    }
+
     // Build category list dynamically from the month-filtered data
     final categories = categoriesFrom(monthFiltered);
 
@@ -335,14 +480,9 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
             onPressed: _openRecurringScreen,
           ),
           IconButton(
-            icon: const Icon(Icons.file_download_outlined),
-            tooltip: 'Export Data',
-            onPressed: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const ExportScreen()),
-              );
-            },
+            icon: const Icon(Icons.notifications_active_outlined),
+            tooltip: 'Notification Reader',
+            onPressed: _openNotificationReader,
           ),
           IconButton(
             icon: const Icon(Icons.sms_outlined),
@@ -355,6 +495,20 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
               await _loadTransactions();
             },
           ),
+          PopupMenuButton<String>(
+            tooltip: 'More',
+            onSelected: (value) {
+              if (value == 'accounts') {
+                _openAccountsScreen();
+              } else if (value == 'export') {
+                _openExportScreen();
+              }
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 'accounts', child: Text('Accounts & balance')),
+              PopupMenuItem(value: 'export', child: Text('Export data')),
+            ],
+          ),
         ],
       ),
       body: Column(
@@ -363,7 +517,11 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
             selectedMonth: _selectedMonth,
             onMonthChanged: _onMonthChanged,
           ),
-          SummaryHeader(transactions: monthFiltered),
+          SummaryHeader(
+            transactions: monthFiltered,
+            bankBalance: bankBalance,
+            balanceLabel: balanceLabel,
+          ),
           const SizedBox(height: 8),
           CategoryFilterChips(
             categories: categories,
@@ -462,9 +620,24 @@ class _TransactionListScreenState extends State<TransactionListScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _openAddTransactionScreen,
-        child: const Icon(Icons.add),
+      floatingActionButton: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.end,
+        children: [
+          FloatingActionButton.small(
+            heroTag: 'quick_add',
+            tooltip: 'Quick add',
+            onPressed: _openQuickAdd,
+            child: const Icon(Icons.bolt),
+          ),
+          const SizedBox(height: 12),
+          FloatingActionButton(
+            heroTag: 'add_transaction',
+            tooltip: 'Add transaction',
+            onPressed: _openAddTransactionScreen,
+            child: const Icon(Icons.add),
+          ),
+        ],
       ),
     );
   }
