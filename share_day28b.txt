@@ -1,3 +1,6 @@
+﻿
+===== lib\main.dart =====
+
 import 'package:flutter/material.dart';
 import 'models/transaction.dart';
 import 'db/database_helper.dart';
@@ -643,6 +646,316 @@ class _TransactionListScreenState extends State<TransactionListScreen>
             child: const Icon(Icons.add),
           ),
         ],
+      ),
+    );
+  }
+}
+
+===== lib\summary_header.dart =====
+
+import 'package:flutter/material.dart';
+import 'models/transaction.dart';
+import 'utils/app_lock.dart';
+import 'utils/transfer_helper.dart';
+
+class SummaryHeader extends StatelessWidget {
+  final List<Transaction> transactions;
+
+  /// The user's current bank balance (set on the Accounts screen), or null if
+  /// it hasn't been set. When null, the third column shows "Net" instead.
+  final double? bankBalance;
+
+  /// "Balance" for the current month, "Closing" for a past month.
+  final String balanceLabel;
+
+  const SummaryHeader({
+    super.key,
+    required this.transactions,
+    this.bankBalance,
+    this.balanceLabel = 'Balance',
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // Own-account transfers are not real income or spending.
+    final counted = withoutTransfers(transactions);
+
+    final double totalCredit = counted
+        .where((t) => t.type == TransactionType.credit)
+        .fold(0.0, (sum, t) => sum + t.amount);
+
+    final double totalDebit = counted
+        .where((t) => t.type == TransactionType.debit)
+        .fold(0.0, (sum, t) => sum + t.amount);
+
+    // "Net" is income minus spending for the selected month. It is NOT your
+    // bank balance, so it is labelled differently.
+    final double net = totalCredit - totalDebit;
+    final double? balance = bankBalance;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.05),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          _buildColumn('Income', totalCredit, Colors.green),
+          _buildColumn('Spent', totalDebit, Colors.red),
+          if (balance != null)
+            _buildLockedBalanceColumn(
+                balanceLabel, balance, balance >= 0 ? Colors.green : Colors.red)
+          else
+            _buildColumn('Net', net, net >= 0 ? Colors.green : Colors.red),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildColumn(String label, double value, Color color) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13)),
+        const SizedBox(height: 4),
+        Text(
+          '₹${value.toStringAsFixed(2)}',
+          style: TextStyle(
+              color: color, fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+      ],
+    );
+  }
+
+  /// Day 27: the real bank balance is hidden until the user unlocks it with
+  /// their fingerprint (or phone PIN). Tap to reveal; tap again to hide.
+  Widget _buildLockedBalanceColumn(String label, double value, Color color) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: AppLock.instance.balancesVisible,
+      builder: (context, visible, _) {
+        return InkWell(
+          onTap: () {
+            if (visible) {
+              AppLock.instance.hideBalances();
+            } else {
+              AppLock.instance.revealBalances();
+            }
+          },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label,
+                      style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                  const SizedBox(width: 4),
+                  Icon(
+                    visible ? Icons.visibility_off : Icons.visibility,
+                    size: 14,
+                    color: Colors.grey,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                visible ? '₹${value.toStringAsFixed(2)}' : '₹ ••••••',
+                style: TextStyle(
+                  color: visible ? color : Colors.grey,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+===== lib\widgets\bank_balance_tile.dart =====
+
+import 'package:flutter/material.dart';
+
+import '../utils/app_lock.dart';
+import 'bank_badge.dart';
+
+/// One row per bank: logo/badge, name, account label, and its own balance.
+/// The balance is masked until the user authenticates via the eye icon.
+class BankBalanceTile extends StatelessWidget {
+  final String bankName;
+  final String? accountLabel;
+  final double? balance;
+  final VoidCallback? onTap;
+
+  const BankBalanceTile({
+    super.key,
+    required this.bankName,
+    this.accountLabel,
+    this.balance,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: BankBadge(bankName: bankName),
+      title: Text(bankName),
+      subtitle: accountLabel == null ? null : Text(accountLabel!),
+      onTap: onTap,
+      trailing: ValueListenableBuilder<bool>(
+        valueListenable: AppLock.instance.balancesVisible,
+        builder: (context, visible, _) {
+          final text = balance == null
+              ? 'Not set'
+              : visible
+                  ? '₹${balance!.toStringAsFixed(2)}'
+                  : '₹ ••••••';
+          return Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(text, style: const TextStyle(fontSize: 16)),
+              IconButton(
+                icon: Icon(visible ? Icons.visibility_off : Icons.visibility),
+                onPressed: () {
+                  if (visible) {
+                    AppLock.instance.hideBalances();
+                  } else {
+                    AppLock.instance.revealBalances();
+                  }
+                },
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+===== lib\widgets\bank_badge.dart =====
+
+import 'package:flutter/material.dart';
+
+class BankInfo {
+  final String key;
+  final String code;
+  final Color color;
+
+  const BankInfo(this.key, this.code, this.color);
+}
+
+class _BankRule {
+  final List<String> keywords;
+  final BankInfo info;
+
+  const _BankRule(this.keywords, this.info);
+}
+
+const List<_BankRule> _rules = [
+  _BankRule(['state bank', 'sbi'], BankInfo('sbi', 'SBI', Color(0xFF1E88E5))),
+  _BankRule(['hdfc'], BankInfo('hdfc', 'HDFC', Color(0xFF1A4F8B))),
+  _BankRule(['icici'], BankInfo('icici', 'ICICI', Color(0xFFE65100))),
+  _BankRule(['axis'], BankInfo('axis', 'AXIS', Color(0xFF9C1B4A))),
+  _BankRule(['kotak'], BankInfo('kotak', 'KOTAK', Color(0xFFD32F2F))),
+  _BankRule(['punjab national', 'pnb'], BankInfo('pnb', 'PNB', Color(0xFF8E24AA))),
+  _BankRule(['baroda'], BankInfo('bob', 'BOB', Color(0xFFEF6C00))),
+  _BankRule(['canara'], BankInfo('canara', 'CAN', Color(0xFF0288D1))),
+  _BankRule(['union bank'], BankInfo('union', 'UBI', Color(0xFFC62828))),
+  _BankRule(['idfc'], BankInfo('idfc', 'IDFC', Color(0xFF7B1FA2))),
+  _BankRule(['yes bank'], BankInfo('yes', 'YES', Color(0xFF1565C0))),
+  _BankRule(['indusind'], BankInfo('indusind', 'IND', Color(0xFF6D4C41))),
+  _BankRule(['slice'], BankInfo('slice', 'SLICE', Color(0xFF5E35B1))),
+  _BankRule(['paytm'], BankInfo('paytm', 'PAYTM', Color(0xFF0277BD))),
+];
+
+String _initials(String name) {
+  final parts = name
+      .trim()
+      .split(RegExp(r'\s+'))
+      .where((p) => p.isNotEmpty)
+      .toList();
+  if (parts.isEmpty) return '?';
+  if (parts.length == 1) {
+    final p = parts.first;
+    return p.substring(0, p.length >= 2 ? 2 : 1).toUpperCase();
+  }
+  return (parts[0][0] + parts[1][0]).toUpperCase();
+}
+
+BankInfo bankInfoFor(String bankName) {
+  final lower = bankName.toLowerCase();
+  for (final rule in _rules) {
+    for (final k in rule.keywords) {
+      if (lower.contains(k)) return rule.info;
+    }
+  }
+  return BankInfo('other', _initials(bankName), Colors.blueGrey);
+}
+
+/// Round badge for a bank. If you add your own logo at
+/// assets/banks/<key>.png (e.g. assets/banks/sbi.png) it is used
+/// automatically; otherwise a coloured monogram is shown.
+class BankBadge extends StatelessWidget {
+  final String bankName;
+  final double size;
+
+  const BankBadge({super.key, required this.bankName, this.size = 40});
+
+  @override
+  Widget build(BuildContext context) {
+    final info = bankInfoFor(bankName);
+    final monogram = _Monogram(info: info, size: size);
+    if (info.key == 'other') return monogram;
+    return ClipOval(
+      child: SizedBox(
+        width: size,
+        height: size,
+        child: Image.asset(
+          'assets/banks/${info.key}.png',
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => monogram,
+        ),
+      ),
+    );
+  }
+}
+
+class _Monogram extends StatelessWidget {
+  final BankInfo info;
+  final double size;
+
+  const _Monogram({required this.info, required this.size});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(color: info.color, shape: BoxShape.circle),
+      child: Padding(
+        padding: EdgeInsets.all(size * 0.12),
+        child: FittedBox(
+          child: Text(
+            info.code,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
       ),
     );
   }

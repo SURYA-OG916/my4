@@ -65,11 +65,22 @@ class SmsParser {
     'BOI': 'Bank of India',
     'CANARA': 'Canara Bank',
     'UNION': 'Union Bank',
+    'SLCBNK': 'Slice',
   };
 
-  // Amount: matches "Rs.500", "Rs 500.00", "INR 500", "₹500.50" etc.
+  // Amount with a currency marker: "Rs.500", "Rs 500.00", "INR 500",
+  // "₹500.50" etc. The \b stops "rs" inside ordinary words from matching.
   static final RegExp _amountPattern = RegExp(
-    r'(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)',
+    r'(?:\brs\.?|\binr|₹)\s*([\d,]+(?:\.\d{1,2})?)',
+    caseSensitive: false,
+  );
+
+  // Day 27: SBI-style UPI alerts put the amount straight after the verb with
+  // no currency marker: "debited by 398.00 on date 20Sep26 ...". Because it
+  // is tied to the debit/credit verb, it is tried BEFORE the currency
+  // pattern so a later "Avl Bal Rs 1200" can never be mistaken for the amount.
+  static final RegExp _amountAfterVerbPattern = RegExp(
+    r'\b(?:debited|credited)\s+(?:by|with|for|of)\s+([\d,]+(?:\.\d{1,2})?)',
     caseSensitive: false,
   );
 
@@ -83,16 +94,68 @@ class SmsParser {
     caseSensitive: false,
   );
 
+  // Day 28: "credit card" / "debit card" name the card, not the direction of
+  // the money. Without this, "Rs. 2,000 spent on your credit card xx0678"
+  // matched both a debit ("spent") and a credit ("credit") and failed.
+  static final RegExp _cardWords = RegExp(
+    r'\b(?:credit|debit)\s+cards?\b',
+    caseSensitive: false,
+  );
+
   // Merchant: text after "to", "at", "towards", or a VPA-looking token
-  // (name@bank). Tries VPA first since it's the most reliable signal,
-  // then falls back to keyword-prefixed text.
+  // (name@bank). Tries the SBI "trf to/from NAME Refno" form first, then
+  // VPA (most reliable generic signal), then keyword-prefixed text.
+  static final RegExp _trfPattern = RegExp(
+    r'\btrf\s+(?:to|from)\s+([A-Za-z0-9@.\-_ ]{2,40}?)\s+ref(?:\s?no)?\b',
+    caseSensitive: false,
+  );
   static final RegExp _vpaPattern = RegExp(
     r'([a-zA-Z0-9.\-_]{2,})@([a-zA-Z]{2,})',
   );
   static final RegExp _merchantAfterKeyword = RegExp(
-    r'\b(?:to|at|towards)\s+([A-Za-z0-9@.\-_ ]{2,40}?)(?:\s+(?:on|for|dt|ref|txn|a\/c)\b|[.,]|$)',
+    r'\b(?:to|at|towards)\s+([A-Za-z0-9@.\-_ ]{2,40}?)(?:\s+(?:on|for|dt|ref|refno|txn|a\/c)\b|[.,]|$)',
     caseSensitive: false,
   );
+
+  // ---- Day 28: Slice SMS (sender "AD-SLCBNK-S" / "VM-SLCBNK-T") ----------
+  // Slice sends an SMS for money you SEND, e.g.
+  //   "Rs. 5,000 sent from a/c xx9809 on 11-Sep-26 to Mr Ramanan Duraisamy
+  //    (UPI Ref: 625405453535). Not you? Call 08048329999 - slice"
+  // plus received-money, credit-card spend and credit-card repayment messages.
+  static const String _sliceAmount =
+      r'(?:rs\.?|inr|₹)\s*([\d,]+(?:\.\d{1,2})?)';
+
+  // groups: 1 = amount, 2 = last 4 digits, 3 = name
+  static final RegExp _sliceSent = RegExp(
+    _sliceAmount +
+        r'\s+sent\s+from\s+a/c\s*(?:xx+|\*+)?(\d{4})?[\s\S]*?\bto\s+([\s\S]+?)\s*(?:\(|\bupi\s+ref\b|\bnot you\b|$)',
+    caseSensitive: false,
+  );
+
+  // groups: 1 = amount, 2 = last 4 digits, 3 = name
+  static final RegExp _sliceReceived = RegExp(
+    _sliceAmount +
+        r'\s+received\s+in\s+slice\s+a/c\s*(?:xx+|\*+)?(\d{4})?[\s\S]*?\bfrom\s+([\s\S]+?)\s*(?:\(|\bupi\s+ref\b|\bnot you\b|\.\s|\.$|$)',
+    caseSensitive: false,
+  );
+
+  // "Rs. 2,000 spent on your credit card xx0678 at MR Surya Sivakumar on
+  // 06-Sep-26. Not you? Call 080-4832-9999 - slice"
+  // groups: 1 = amount, 2 = card last 4 digits, 3 = merchant
+  static final RegExp _sliceCardSpent = RegExp(
+    _sliceAmount +
+        r'\s+spent\s+on\s+your\s+credit\s+card\s*(?:xx+|\*+)?(\d{4})?[\s\S]*?\bat\s+([\s\S]+?)(?=\s+on\s+\d|\.\s|\(|$)',
+    caseSensitive: false,
+  );
+
+  // "Repayment of Rs.2,059 received for the slice credit card."
+  static final RegExp _sliceRepayment = RegExp(
+    r'repayment\s+of\s+' + _sliceAmount + r'\s+received',
+    caseSensitive: false,
+  );
+
+  static bool _isSliceSender(String sender) =>
+      sender.toUpperCase().contains('SLCBNK');
 
   /// Attempts to parse a single SMS (sender + body) into a Transaction.
   /// [dateMillis] should be the SMS's own timestamp (msg.date) so the
@@ -109,15 +172,26 @@ class SmsParser {
         ? DateTime.fromMillisecondsSinceEpoch(dateMillis)
         : DateTime.now();
 
-    final bool isDebit = _debitPattern.hasMatch(body);
-    final bool isCredit = _creditPattern.hasMatch(body);
+    // Slice has its own wording; use it first and fall back to the generic
+    // parser below if none of the Slice forms match.
+    if (_isSliceSender(sender)) {
+      final sliceResult =
+          _parseSliceSms(sender: sender, body: body, smsDate: smsDate);
+      if (sliceResult != null) return sliceResult;
+    }
+
+    // Direction is judged with "credit card" / "debit card" wording removed.
+    final String directionText = body.replaceAll(_cardWords, ' ');
+    final bool isDebit = _debitPattern.hasMatch(directionText);
+    final bool isCredit = _creditPattern.hasMatch(directionText);
     final TransactionType? detectedType = (isDebit != isCredit)
         ? (isDebit ? TransactionType.debit : TransactionType.credit)
         : null;
 
     final String? merchantGuess = _extractMerchant(body);
 
-    final amountMatch = _amountPattern.firstMatch(body);
+    final amountMatch = _amountAfterVerbPattern.firstMatch(body) ??
+        _amountPattern.firstMatch(body);
     if (amountMatch == null) {
       return SmsParseResult.failure(
         'Could not find an amount in the message',
@@ -180,6 +254,102 @@ class SmsParser {
     );
   }
 
+  /// Slice SMS: money sent, money received, credit-card spending and
+  /// credit-card repayments. Returns null when the message matches none of
+  /// these forms.
+  ///
+  /// Credit-card items get a source like "Slice credit card (xx0678)" so they
+  /// are told apart from the Slice bank account ("Slice • 9809"): card
+  /// spending is charged to the card, not to the Slice bank balance.
+  static SmsParseResult? _parseSliceSms({
+    required String sender,
+    required String body,
+    required DateTime smsDate,
+  }) {
+    double? amount;
+    String? last4;
+    String? merchant;
+    TransactionType? type;
+    var isCard = false;
+
+    final repayment = _sliceRepayment.firstMatch(body);
+    final cardSpent = _sliceCardSpent.firstMatch(body);
+    final sent = _sliceSent.firstMatch(body);
+    final received = _sliceReceived.firstMatch(body);
+
+    if (repayment != null) {
+      amount = _toAmount(repayment.group(1));
+      type = TransactionType.credit;
+      merchant = 'Slice credit card repayment';
+      isCard = true;
+    } else if (cardSpent != null) {
+      amount = _toAmount(cardSpent.group(1));
+      last4 = cardSpent.group(2);
+      merchant = _cleanName(cardSpent.group(3));
+      type = TransactionType.debit;
+      isCard = true;
+    } else if (sent != null) {
+      amount = _toAmount(sent.group(1));
+      last4 = sent.group(2);
+      merchant = _cleanName(sent.group(3));
+      type = TransactionType.debit;
+    } else if (received != null) {
+      amount = _toAmount(received.group(1));
+      last4 = received.group(2);
+      merchant = _cleanName(received.group(3));
+      type = TransactionType.credit;
+    } else {
+      return null;
+    }
+
+    if (amount == null || amount <= 0 || type == null) return null;
+
+    final String source;
+    if (isCard) {
+      source =
+          last4 == null ? 'Slice credit card' : 'Slice credit card (xx$last4)';
+    } else {
+      source = last4 == null ? 'Slice' : 'Slice • $last4';
+    }
+    final String title = merchant ?? 'Slice';
+    final String category = CategoryMatcher.categorize(title, bankName: 'Slice');
+
+    final transaction = Transaction(
+      id: '${smsDate.millisecondsSinceEpoch}_${body.hashCode}',
+      title: title,
+      source: source,
+      amount: amount,
+      date: smsDate,
+      type: type,
+      category: category,
+    );
+
+    return SmsParseResult.success(
+      transaction,
+      body,
+      sender,
+      bankName: source,
+      smsDate: smsDate,
+    );
+  }
+
+  static double? _toAmount(String? raw) {
+    if (raw == null) return null;
+    return double.tryParse(raw.replaceAll(',', ''));
+  }
+
+  static String? _cleanName(String? raw) {
+    if (raw == null) return null;
+    var value = raw.replaceAll(RegExp(r'\s+'), ' ').trim();
+    while (value.endsWith('.') || value.endsWith(',')) {
+      value = value.substring(0, value.length - 1).trim();
+    }
+    if (value.length > 40) {
+      value = value.substring(0, 40).trim();
+    }
+    return value.isEmpty ? null : value;
+  }
+
   static String _detectBank(String sender) {
     final String upperSender = sender.toUpperCase();
 
@@ -193,6 +363,14 @@ class SmsParser {
   }
 
   static String? _extractMerchant(String body) {
+    final trfMatch = _trfPattern.firstMatch(body);
+    if (trfMatch != null) {
+      final String candidate = trfMatch.group(1)!.trim();
+      if (candidate.isNotEmpty) {
+        return candidate;
+      }
+    }
+
     final vpaMatch = _vpaPattern.firstMatch(body);
     if (vpaMatch != null) {
       return vpaMatch.group(0);

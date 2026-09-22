@@ -1,0 +1,2210 @@
+﻿
+===== lib\utils\notification_parser.dart =====
+
+// Day 26: parse UPI app notification text (GPay, PhonePe, Paytm, ...).
+// Day 27: added Samsung Wallet and WhatsApp Pay ("X sent â‚¹1.00 to You").
+//
+// Self-contained on purpose: it depends on no MY4 models, so it can be tuned
+// against real notification wording without touching the rest of the app.
+
+enum NotificationDirection { debit, credit }
+
+// Package name -> friendly app name. Keep in sync with ALLOWED_PACKAGES in
+// MyNotificationListenerService.kt.
+const Map<String, String> upiAppLabels = {
+  'com.google.android.apps.nbu.paisa.user': 'Google Pay',
+  'com.phonepe.app': 'PhonePe',
+  'net.one97.paytm': 'Paytm',
+  'in.org.npci.upiapp': 'BHIM',
+  'com.dreamplug.androidapp': 'CRED',
+  'com.samsung.android.spaymini': 'Samsung Wallet',
+  'com.samsung.android.spay': 'Samsung Wallet',
+  'com.whatsapp': 'WhatsApp Pay',
+  'com.whatsapp.w4b': 'WhatsApp Pay',
+  'com.android.shell': 'Test (adb shell)',
+};
+
+class NotificationParseResult {
+  final bool success;
+  final String appLabel;
+  final double? amount;
+  final NotificationDirection? direction;
+  final String? merchant;
+  final String? bankName;
+  final String? accountLast4;
+  final String? failureReason;
+
+  const NotificationParseResult({
+    required this.success,
+    required this.appLabel,
+    this.amount,
+    this.direction,
+    this.merchant,
+    this.bankName,
+    this.accountLast4,
+    this.failureReason,
+  });
+
+  // Used as the transaction "source", e.g. "Paytm â€¢ SBI 3835".
+  String get sourceLabel {
+    final bank = bankName;
+    final last4 = accountLast4;
+    final account = [
+      if (bank != null && bank.isNotEmpty) bank,
+      if (last4 != null && last4.isNotEmpty) last4,
+    ].join(' ');
+    return account.isEmpty ? appLabel : '$appLabel â€¢ $account';
+  }
+
+  // One-line description used for the preview under each captured notification.
+  String get summary {
+    if (!success) {
+      return failureReason ?? 'Could not parse';
+    }
+    final kind = direction == NotificationDirection.debit ? 'Debit' : 'Credit';
+    final amountText = 'â‚¹${amount!.toStringAsFixed(2)}';
+    return '$kind $amountText â€¢ ${merchant ?? 'merchant not found'}';
+  }
+}
+
+class NotificationParser {
+  // Amount: â‚¹250, Rs 250, Rs. 1,250.50, INR 99
+  static final RegExp _amount = RegExp(
+    r"(?:â‚¹|\brs\.?|\binr)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)",
+    caseSensitive: false,
+  );
+
+  // Notifications that are NOT a completed payment.
+  static final RegExp _skip = RegExp(
+    r"\b(?:failed|declined|unsuccessful|pending|requests?|requested|reminder|overdue|scheduled|upcoming|offers?|cashback|rewards?|scratch|coupons?)\b",
+    caseSensitive: false,
+  );
+
+  // Credit wording. The last alternative is WhatsApp Pay's
+  // "Name sent â‚¹1.00 to You" form.
+  static final RegExp _credit = RegExp(
+    r"\b(?:received|credited|refund(?:ed)?|deposited)\b|\b(?:sent|paid)\s+you\b|\b(?:sent|paid)\s+(?:â‚¹|rs\.?|inr)\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?\s+to\s+you\b",
+    caseSensitive: false,
+  );
+
+  static final RegExp _debit = RegExp(
+    r"\b(?:paid(?!\s+you)|sent(?!\s+you)|debited|spent|payment\s+(?:of|to|successful)|transferred|withdrawn|purchase)\b",
+    caseSensitive: false,
+  );
+
+  // "Ravi Kumar sent you â‚¹500" -> Ravi Kumar
+  static final RegExp _leadingSender = RegExp(
+    r"^(?:you\s+)?(.+?)\s+(?:has\s+)?(?:sent|paid)\s+you\b",
+    caseSensitive: false,
+  );
+
+  // WhatsApp Pay: "MsYogarathinamK sent â‚¹1.00 to You" -> MsYogarathinamK
+  static final RegExp _leadingSenderAmount = RegExp(
+    r"^(?:you\s+)?(.+?)\s+(?:has\s+)?(?:sent|paid)\s+(?:â‚¹|rs\.?|inr)\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?\s+to\s+you\b",
+    caseSensitive: false,
+  );
+
+  // Samsung Wallet: "sharaj7106@pingpay has sent money on your ... account."
+  static final RegExp _vpaSentMoney = RegExp(
+    r"([A-Za-z0-9._-]+@[A-Za-z0-9.-]+)\s+has\s+sent\s+money",
+    caseSensitive: false,
+  );
+
+  // "... to Zomato", "... from Ravi", "... at Amazon", "... to 9876543210@ybl"
+  static final RegExp _candidate = RegExp(
+    r"\b(?:to|from|at)\s+([A-Za-z][A-Za-z0-9 &'._@-]*?|[0-9]{6,}[A-Za-z0-9@._-]*?)(?=\s+(?:using|via|through|on|for|with|at|successful|successfully|is|was|has|from|to|ref|upi|txn)\b|\s+(?:â‚¹|rs\.?|inr)\s*\d|\.(?=\s|$)|[!,;:()\n]|$)",
+    caseSensitive: false,
+  );
+
+  // Candidates like "your account" / "bank" are not merchants.
+  static final RegExp _badMerchant = RegExp(
+    r"^(?:your|you|a/c|ac|account|bank|the)\b",
+    caseSensitive: false,
+  );
+
+  // "Deposited in your State Bank Of India - 3835 on 19 September ..."
+  static final RegExp _accountWithBank = RegExp(
+    r"\byour\s+([A-Za-z][A-Za-z .&]*?)\s*[-â€“:]\s*(?:xx+|\*+)?(\d{4})\b",
+    caseSensitive: false,
+  );
+
+  // Samsung Wallet: "... on your STATE BANK OF INDIA account."
+  static final RegExp _bankOnYourAccount = RegExp(
+    r"\bon\s+your\s+([A-Za-z][A-Za-z .&]*?)\s+account\b",
+    caseSensitive: false,
+  );
+
+  // "... account XX3835", "... A/c ending 4321" (no bank name available)
+  static final RegExp _accountOnly = RegExp(
+    r"\b(?:a/c|acct?|account)\s*(?:no\.?)?\s*(?:xx+|\*+|ending(?:\s+with)?\s*)?(\d{4})\b",
+    caseSensitive: false,
+  );
+
+  static final RegExp _genericBankWord = RegExp(
+    r"^(?:a/c|ac|acct|account|bank)$",
+    caseSensitive: false,
+  );
+
+  static const Map<String, String> _shortBankNames = {
+    'state bank of india': 'SBI',
+    'sbi': 'SBI',
+    'hdfc bank': 'HDFC Bank',
+    'icici bank': 'ICICI Bank',
+    'axis bank': 'Axis Bank',
+    'kotak mahindra bank': 'Kotak',
+    'punjab national bank': 'PNB',
+    'bank of baroda': 'Bank of Baroda',
+    'canara bank': 'Canara Bank',
+    'union bank of india': 'Union Bank',
+    'indian bank': 'Indian Bank',
+    'idfc first bank': 'IDFC FIRST',
+  };
+
+  static NotificationParseResult parse({
+    required String packageName,
+    required String title,
+    required String text,
+  }) {
+    final appLabel = upiAppLabels[packageName] ?? packageName;
+    final cleanTitle = _collapse(title);
+    final cleanText = _collapse(text);
+    final combined = _collapse('$cleanTitle. $cleanText');
+
+    final amountMatch = _amount.firstMatch(combined);
+    if (amountMatch == null) {
+      return NotificationParseResult(
+        success: false,
+        appLabel: appLabel,
+        failureReason: 'No amount found',
+      );
+    }
+    final amount = double.tryParse(amountMatch.group(1)!.replaceAll(',', ''));
+    if (amount == null || amount <= 0) {
+      return NotificationParseResult(
+        success: false,
+        appLabel: appLabel,
+        failureReason: 'Amount could not be read',
+      );
+    }
+
+    if (_skip.hasMatch(combined)) {
+      return NotificationParseResult(
+        success: false,
+        appLabel: appLabel,
+        amount: amount,
+        failureReason:
+            'Not a completed payment (failed, pending, request or promotional)',
+      );
+    }
+
+    // Debit vs credit: whichever keyword appears first wins. On a tie
+    // (WhatsApp's "sent â‚¹1.00 to You" matches both at the same spot) credit
+    // wins, because the credit form is the more specific one.
+    final creditMatch = _credit.firstMatch(combined);
+    final debitMatch = _debit.firstMatch(combined);
+    NotificationDirection? direction;
+    if (creditMatch != null && debitMatch != null) {
+      direction = creditMatch.start <= debitMatch.start
+          ? NotificationDirection.credit
+          : NotificationDirection.debit;
+    } else if (creditMatch != null) {
+      direction = NotificationDirection.credit;
+    } else if (debitMatch != null) {
+      direction = NotificationDirection.debit;
+    }
+
+    if (direction == null) {
+      return NotificationParseResult(
+        success: false,
+        appLabel: appLabel,
+        amount: amount,
+        failureReason: 'Could not tell if money was sent or received',
+      );
+    }
+
+    String? merchant;
+
+    if (direction == NotificationDirection.credit) {
+      for (final source in [cleanTitle, cleanText]) {
+        for (final pattern in [_leadingSender, _leadingSenderAmount]) {
+          final m = pattern.firstMatch(source);
+          if (m != null) {
+            merchant = _cleanMerchant(m.group(1)!);
+            if (merchant != null) break;
+          }
+        }
+        if (merchant != null) break;
+      }
+      if (merchant == null) {
+        final vpa = _vpaSentMoney.firstMatch(combined);
+        if (vpa != null) {
+          merchant = _cleanMerchant(vpa.group(1)!);
+        }
+      }
+    }
+
+    if (merchant == null) {
+      for (final m in _candidate.allMatches(combined)) {
+        final candidate = m.group(1)!.trim();
+        if (_badMerchant.hasMatch(candidate)) continue;
+        merchant = _cleanMerchant(candidate);
+        if (merchant != null) break;
+      }
+    }
+
+    // Bank + last 4 digits of the account, when the notification mentions them.
+    String? bankName;
+    String? accountLast4;
+    final withBank = _accountWithBank.firstMatch(combined);
+    if (withBank != null) {
+      final rawBank = withBank.group(1)!.trim();
+      accountLast4 = withBank.group(2);
+      if (!_genericBankWord.hasMatch(rawBank)) {
+        bankName = _shortBankName(rawBank);
+      }
+    } else {
+      final plain = _accountOnly.firstMatch(combined);
+      if (plain != null) {
+        accountLast4 = plain.group(1);
+      }
+    }
+
+    // "... on your STATE BANK OF INDIA account." (no digits given)
+    if (bankName == null) {
+      final onYour = _bankOnYourAccount.firstMatch(combined);
+      if (onYour != null) {
+        final rawBank = onYour.group(1)!.trim();
+        final lowerBank = rawBank.toLowerCase();
+        if (!_genericBankWord.hasMatch(rawBank) &&
+            (lowerBank.contains('bank') ||
+                _shortBankNames.containsKey(lowerBank))) {
+          bankName = _shortBankName(rawBank);
+        }
+      }
+    }
+
+    return NotificationParseResult(
+      success: true,
+      appLabel: appLabel,
+      amount: amount,
+      direction: direction,
+      merchant: merchant,
+      bankName: bankName,
+      accountLast4: accountLast4,
+    );
+  }
+
+  static String _collapse(String input) {
+    return input.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  static String? _cleanMerchant(String raw) {
+    var value = _collapse(raw);
+    while (value.endsWith('.') || value.endsWith(',')) {
+      value = value.substring(0, value.length - 1).trim();
+    }
+    if (value.length > 40) {
+      value = value.substring(0, 40).trim();
+    }
+    return value.isEmpty ? null : value;
+  }
+
+  static String _shortBankName(String raw) {
+    final normalized = _collapse(raw.toLowerCase().replaceAll(RegExp(r'[^a-z ]'), ' '));
+    return _shortBankNames[normalized] ?? _collapse(raw);
+  }
+}
+
+===== lib\utils\notification_ingestor.dart =====
+
+import 'dart:convert';
+
+import 'package:flutter/services.dart';
+
+import '../db/database_helper.dart';
+import '../models/transaction.dart';
+import 'category_matcher.dart';
+import 'needs_review_store.dart';
+import 'notification_parser.dart';
+import 'transfer_helper.dart';
+
+// Turns captured UPI-app notifications into real transactions.
+//
+// Rules (mirrors the SMS pipeline):
+//  - successful parse + no possible duplicate  -> auto-inserted
+//  - successful parse + possible duplicate     -> "needs review" (user decides)
+//  - failed parse (no amount, failed/pending/promotional) -> ignored, and NOT
+//    marked processed, so an improved parser can pick it up on a later run
+//  - payments to/from one of the user's own names -> category "Transfer"
+//  - handled notifications are remembered in the processed_sms table
+
+class CapturedNotification {
+  final String id;
+  final String packageName;
+  final String title;
+  final String text;
+  final int postTime;
+
+  const CapturedNotification({
+    required this.id,
+    required this.packageName,
+    required this.title,
+    required this.text,
+    required this.postTime,
+  });
+
+  factory CapturedNotification.fromJson(Map<String, dynamic> json) {
+    return CapturedNotification(
+      id: (json['id'] ?? '').toString(),
+      packageName: (json['package'] ?? '').toString(),
+      title: (json['title'] ?? '').toString(),
+      text: (json['text'] ?? '').toString(),
+      postTime: (json['postTime'] as num? ?? 0).toInt(),
+    );
+  }
+
+  String get appLabel => upiAppLabels[packageName] ?? packageName;
+
+  DateTime get postedAt => DateTime.fromMillisecondsSinceEpoch(postTime);
+
+  // Same fingerprint scheme as SMS, so it shares the processed_sms table.
+  String get hash => DatabaseHelper.smsHash(
+        sender: packageName,
+        body: '$title|$text',
+        dateMillis: postTime,
+      );
+
+  NotificationParseResult parse() {
+    return NotificationParser.parse(
+      packageName: packageName,
+      title: title,
+      text: text,
+    );
+  }
+}
+
+enum NotificationStatus { added, alreadyHandled, needsReview, ignored }
+
+class NotificationEntry {
+  final CapturedNotification notification;
+  final NotificationParseResult parsed;
+  final NotificationStatus status;
+
+  /// The transaction that would be inserted (set for added / needsReview).
+  final Transaction? draft;
+
+  /// Human-readable descriptions of the possible duplicates (needsReview only).
+  final List<String> duplicateNotes;
+
+  const NotificationEntry({
+    required this.notification,
+    required this.parsed,
+    required this.status,
+    this.draft,
+    this.duplicateNotes = const [],
+  });
+}
+
+class NotificationIngestResult {
+  final bool listenerEnabled;
+
+  /// Newest first.
+  final List<NotificationEntry> entries;
+  final int addedCount;
+
+  const NotificationIngestResult({
+    required this.listenerEnabled,
+    required this.entries,
+    required this.addedCount,
+  });
+
+  List<NotificationEntry> get needsReview => entries
+      .where((e) => e.status == NotificationStatus.needsReview)
+      .toList();
+
+  /// Payments that became (or already are) transactions.
+  List<NotificationEntry> get handled => entries
+      .where((e) =>
+          e.status == NotificationStatus.added ||
+          e.status == NotificationStatus.alreadyHandled)
+      .toList();
+
+  /// Promotions, chats, rewards, failed payments: captured but not payments.
+  List<NotificationEntry> get ignored =>
+      entries.where((e) => e.status == NotificationStatus.ignored).toList();
+}
+
+class NotificationIngestor {
+  static const MethodChannel _channel = MethodChannel('my4/notifications');
+
+  static Future<NotificationIngestResult>? _inFlight;
+
+  /// Reads the native queue and ingests anything new. Safe to call from
+  /// several places at once: concurrent callers share one run.
+  static Future<NotificationIngestResult> run() {
+    final existing = _inFlight;
+    if (existing != null) return existing;
+
+    final future = _run().whenComplete(() {
+      _inFlight = null;
+    });
+    _inFlight = future;
+    return future;
+  }
+
+  static Future<List<CapturedNotification>> _readQueue() async {
+    final raw = await _channel.invokeMethod<String>('getPending') ?? '[]';
+    final decoded = jsonDecode(raw) as List<dynamic>;
+    return decoded
+        .map((e) => CapturedNotification.fromJson(
+            Map<String, dynamic>.from(e as Map)))
+        .toList();
+  }
+
+  static Future<NotificationIngestResult> _run() async {
+    final enabled =
+        await _channel.invokeMethod<bool>('isListenerEnabled') ?? false;
+
+    // Oldest first, so earlier notifications are inserted before later ones
+    // are checked for duplicates.
+    final captured = await _readQueue();
+    captured.sort((a, b) => a.postTime.compareTo(b.postTime));
+
+    final ownNames = await DatabaseHelper.instance.getMyNames();
+
+    final entries = <NotificationEntry>[];
+    var addedCount = 0;
+
+    for (final n in captured) {
+      final parsed = n.parse();
+
+      if (await DatabaseHelper.instance.isSmsProcessed(n.hash)) {
+        entries.add(NotificationEntry(
+          notification: n,
+          parsed: parsed,
+          status: NotificationStatus.alreadyHandled,
+        ));
+        continue;
+      }
+
+      if (!parsed.success) {
+        entries.add(NotificationEntry(
+          notification: n,
+          parsed: parsed,
+          status: NotificationStatus.ignored,
+        ));
+        continue;
+      }
+
+      final draft = _buildTransaction(n, parsed, ownNames);
+
+      final duplicates = await DatabaseHelper.instance.findPotentialDuplicates(
+        amount: draft.amount,
+        type: draft.type,
+        date: draft.date,
+      );
+      final pendingSms = NeedsReviewStore.instance.findMatching(
+        amount: draft.amount,
+        type: draft.type,
+        date: draft.date,
+      );
+
+      if (duplicates.isEmpty && pendingSms.isEmpty) {
+        await DatabaseHelper.instance.insertTransaction(draft);
+        await DatabaseHelper.instance.markSmsProcessed(n.hash);
+        addedCount++;
+        entries.add(NotificationEntry(
+          notification: n,
+          parsed: parsed,
+          status: NotificationStatus.added,
+          draft: draft,
+        ));
+      } else {
+        final notes = <String>[
+          for (final t in duplicates)
+            'Similar: ${t.title} â€¢ â‚¹${t.amount.toStringAsFixed(2)} â€¢ ${_formatDate(t.date)}',
+          if (pendingSms.isNotEmpty)
+            'A matching SMS is waiting in SMS Reader â†’ Needs review',
+        ];
+        entries.add(NotificationEntry(
+          notification: n,
+          parsed: parsed,
+          status: NotificationStatus.needsReview,
+          draft: draft,
+          duplicateNotes: notes,
+        ));
+      }
+    }
+
+    entries.sort((a, b) =>
+        b.notification.postTime.compareTo(a.notification.postTime));
+
+    return NotificationIngestResult(
+      listenerEnabled: enabled,
+      entries: entries,
+      addedCount: addedCount,
+    );
+  }
+
+  static Transaction _buildTransaction(
+    CapturedNotification n,
+    NotificationParseResult parsed,
+    List<String> ownNames,
+  ) {
+    final merchant = parsed.merchant;
+    final type = parsed.direction == NotificationDirection.credit
+        ? TransactionType.credit
+        : TransactionType.debit;
+
+    // Money to/from one of the user's own names is a transfer between their
+    // own accounts, not income or spending.
+    final category = (merchant != null && matchesOwnName(merchant, ownNames))
+        ? transferCategory
+        : CategoryMatcher.categorize(merchant ?? '', bankName: parsed.bankName);
+
+    return Transaction(
+      id: 'notif_${n.postTime}_${n.hash.substring(0, 8)}',
+      title: merchant ?? parsed.appLabel,
+      source: parsed.sourceLabel,
+      amount: parsed.amount!,
+      date: n.postedAt,
+      type: type,
+      category: category,
+    );
+  }
+
+  // --- Actions for needs-review entries ---
+
+  static Future<void> addReviewItem(NotificationEntry entry) async {
+    final draft = entry.draft;
+    if (draft == null) return;
+    await DatabaseHelper.instance.insertTransaction(draft);
+    await DatabaseHelper.instance.markSmsProcessed(entry.notification.hash);
+  }
+
+  static Future<void> dismissReviewItem(NotificationEntry entry) async {
+    await DatabaseHelper.instance.markSmsProcessed(entry.notification.hash);
+  }
+
+  // --- Info for the Accounts screen ---
+
+  /// Package name -> time of the newest captured notification from that app.
+  static Future<Map<String, DateTime>> lastSeenByApp() async {
+    final captured = await _readQueue();
+    final result = <String, DateTime>{};
+    for (final n in captured) {
+      // Rewards, promotions and chats don't count as payment notifications.
+      if (!n.parse().success) continue;
+      final existing = result[n.packageName];
+      if (existing == null || n.postedAt.isAfter(existing)) {
+        result[n.packageName] = n.postedAt;
+      }
+    }
+    return result;
+  }
+
+  // --- Native bridge helpers ---
+
+  static Future<void> clearCaptured() async {
+    await _channel.invokeMethod<void>('clearPending');
+  }
+
+  static Future<void> openListenerSettings() async {
+    await _channel.invokeMethod<void>('openListenerSettings');
+  }
+
+  static String _formatDate(DateTime d) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(d.day)}/${two(d.month)}/${d.year}';
+  }
+}
+
+===== lib\screens\notification_reader_screen.dart =====
+
+import 'package:flutter/material.dart';
+
+import '../utils/notification_ingestor.dart';
+
+// Captured UPI notifications are turned into real transactions automatically.
+// Possible duplicates wait here for a decision. Notifications that are not
+// payments (promotions, chats, rewards, failed payments) are hidden unless
+// you switch them on.
+
+String _formatDateTime(int millis) {
+  final d = DateTime.fromMillisecondsSinceEpoch(millis);
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(d.day)}/${two(d.month)}/${d.year} ${two(d.hour)}:${two(d.minute)}';
+}
+
+class NotificationReaderScreen extends StatefulWidget {
+  const NotificationReaderScreen({super.key});
+
+  @override
+  State<NotificationReaderScreen> createState() =>
+      _NotificationReaderScreenState();
+}
+
+class _NotificationReaderScreenState extends State<NotificationReaderScreen>
+    with WidgetsBindingObserver {
+  bool _loading = true;
+  bool _showIgnored = false;
+  String? _error;
+  NotificationIngestResult? _result;
+
+  bool get _enabled => _result?.listenerEnabled ?? false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _refresh();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  // Coming back from the system "Notification access" screen should update the status.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refresh();
+    }
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final result = await NotificationIngestor.run();
+      if (!mounted) return;
+      setState(() {
+        _result = result;
+        _error = null;
+        _loading = false;
+      });
+      if (result.addedCount > 0) {
+        final count = result.addedCount;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Added $count transaction${count == 1 ? '' : 's'} from notifications',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  Future<void> _openSettings() async {
+    try {
+      await NotificationIngestor.openListenerSettings();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+    }
+  }
+
+  Future<void> _clear() async {
+    try {
+      await NotificationIngestor.clearCaptured();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+      return;
+    }
+    await _refresh();
+  }
+
+  Future<void> _addAnyway(NotificationEntry entry) async {
+    try {
+      await NotificationIngestor.addReviewItem(entry);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+      return;
+    }
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Transaction added')),
+      );
+    }
+    await _refresh();
+  }
+
+  Future<void> _dismiss(NotificationEntry entry) async {
+    try {
+      await NotificationIngestor.dismissReviewItem(entry);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+      return;
+    }
+    await _refresh();
+  }
+
+  Widget _buildStatusCard() {
+    return Card(
+      child: ListTile(
+        leading: Icon(
+          _enabled ? Icons.check_circle : Icons.error_outline,
+          color: _enabled ? Colors.green.shade700 : Colors.orange.shade800,
+          size: 32,
+        ),
+        title: Text(
+          _enabled ? 'Notification access is on' : 'Notification access is off',
+        ),
+        subtitle: Text(
+          _enabled
+              ? 'Listening to Google Pay, PhonePe, Paytm, BHIM, CRED, '
+                  'Samsung Wallet and WhatsApp Pay payments only.'
+              : "MY4 can't see UPI app notifications until you grant access.",
+        ),
+        trailing: FilledButton(
+          onPressed: _openSettings,
+          child: Text(_enabled ? 'Manage' : 'Enable'),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildErrorCard() {
+    return Card(
+      color: Colors.red.shade50,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Text(
+          'Error: $_error',
+          style: TextStyle(color: Colors.red.shade900),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReviewTile(NotificationEntry entry) {
+    final n = entry.notification;
+    return Card(
+      color: Colors.orange.shade50,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              n.title.isEmpty ? '(no title)' : n.title,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            if (n.text.isNotEmpty) Text(n.text),
+            Text(
+              '${n.appLabel} â€¢ ${_formatDateTime(n.postTime)}',
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'âš  Possible duplicate: ${entry.parsed.summary}',
+              style: TextStyle(
+                color: Colors.orange.shade900,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            for (final note in entry.duplicateNotes)
+              Text(note, style: TextStyle(color: Colors.grey.shade800)),
+            const SizedBox(height: 8),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                TextButton(
+                  onPressed: () => _dismiss(entry),
+                  child: const Text('Dismiss'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton(
+                  onPressed: () => _addAnyway(entry),
+                  child: const Text('Add anyway'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildTile(NotificationEntry entry) {
+    final n = entry.notification;
+
+    String statusText;
+    Color statusColor;
+    switch (entry.status) {
+      case NotificationStatus.added:
+        statusText = 'âœ“ Added: ${entry.parsed.summary}';
+        statusColor = Colors.green.shade800;
+        break;
+      case NotificationStatus.alreadyHandled:
+        statusText = 'âœ“ Handled: ${entry.parsed.summary}';
+        statusColor = Colors.grey.shade700;
+        break;
+      case NotificationStatus.ignored:
+        statusText = 'âœ— ${entry.parsed.summary}';
+        statusColor = Colors.orange.shade900;
+        break;
+      case NotificationStatus.needsReview:
+        statusText = 'âš  ${entry.parsed.summary}';
+        statusColor = Colors.orange.shade900;
+        break;
+    }
+
+    return Card(
+      child: ListTile(
+        isThreeLine: true,
+        leading: const CircleAvatar(
+          child: Icon(Icons.notifications_outlined),
+        ),
+        title: Text(n.title.isEmpty ? '(no title)' : n.title),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(n.text.isEmpty ? '(no text)' : n.text),
+            Text('${n.appLabel} â€¢ ${_formatDateTime(n.postTime)}'),
+            const SizedBox(height: 4),
+            Text(
+              statusText,
+              style: TextStyle(
+                color: statusColor,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionHeader(String label) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
+      child: Text(
+        label,
+        style: Theme.of(context).textTheme.titleMedium,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final result = _result;
+    final needsReview = result?.needsReview ?? const <NotificationEntry>[];
+    final handled = result?.handled ?? const <NotificationEntry>[];
+    final ignored = result?.ignored ?? const <NotificationEntry>[];
+    final hasAnything =
+        needsReview.isNotEmpty || handled.isNotEmpty || ignored.isNotEmpty;
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Notification Reader'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
+            onPressed: _refresh,
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_sweep_outlined),
+            tooltip: 'Clear captured',
+            onPressed: hasAnything ? _clear : null,
+          ),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                _buildStatusCard(),
+                if (_error != null) _buildErrorCard(),
+                if (needsReview.isNotEmpty) ...[
+                  _sectionHeader('Needs review (${needsReview.length})'),
+                  ...needsReview.map(_buildReviewTile),
+                ],
+                _sectionHeader('Payments (${handled.length})'),
+                if (handled.isEmpty)
+                  const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Text(
+                      'No payment notifications yet. Once access is on, '
+                      'payments from supported UPI apps will show up here '
+                      'and be added to your transactions.',
+                    ),
+                  )
+                else
+                  ...handled.map(_buildTile),
+                if (ignored.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Card(
+                    child: SwitchListTile(
+                      title: Text('Show ignored (${ignored.length})'),
+                      subtitle: const Text(
+                        'Promotions, rewards and failed or pending payments. '
+                        'These are never added as transactions.',
+                      ),
+                      value: _showIgnored,
+                      onChanged: (value) {
+                        setState(() => _showIgnored = value);
+                      },
+                    ),
+                  ),
+                  if (_showIgnored) ...ignored.map(_buildTile),
+                ],
+              ],
+            ),
+    );
+  }
+}
+
+===== lib\models\bank_account.dart =====
+
+/// A bank account the user has added (bank name + last 4 digits only).
+class BankAccount {
+  final String id;
+  final String bank;
+  final String last4;
+
+  const BankAccount({
+    required this.id,
+    required this.bank,
+    required this.last4,
+  });
+
+  String get label => '$bank $last4';
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'bank': bank,
+      'last4': last4,
+    };
+  }
+
+  factory BankAccount.fromMap(Map<String, dynamic> map) {
+    return BankAccount(
+      id: map['id'] as String,
+      bank: map['bank'] as String,
+      last4: map['last4'] as String,
+    );
+  }
+}
+
+===== lib\screens\accounts_screen.dart =====
+
+import 'package:flutter/material.dart';
+
+import '../db/database_helper.dart';
+import '../models/bank_account.dart';
+import '../models/transaction.dart';
+import '../utils/balance_helper.dart';
+import '../utils/notification_ingestor.dart';
+import '../utils/notification_parser.dart';
+import '../utils/transfer_helper.dart';
+
+String _two(int n) => n.toString().padLeft(2, '0');
+
+String _formatDate(DateTime d) => '${_two(d.day)}/${_two(d.month)}/${d.year}';
+
+String _formatDateTime(DateTime d) =>
+    '${_formatDate(d)} ${_two(d.hour)}:${_two(d.minute)}';
+
+class AccountsScreen extends StatefulWidget {
+  const AccountsScreen({super.key});
+
+  @override
+  State<AccountsScreen> createState() => _AccountsScreenState();
+}
+
+class _AccountsScreenState extends State<AccountsScreen> {
+  bool _loading = true;
+  String? _error;
+
+  List<BankAccount> _accounts = [];
+  List<String> _myNames = [];
+  Map<String, Set<String>> _links = {};
+  BalanceSnapshot? _snapshot;
+  List<Transaction> _transactions = [];
+  Map<String, DateTime> _lastSeen = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final db = DatabaseHelper.instance;
+      final accounts = await db.getAllAccounts();
+      final names = await db.getMyNames();
+      final links = await db.getAppLinks();
+      final snapshot = await BalanceHelper.loadSnapshot();
+      final transactions = await db.getAllTransactions();
+
+      var lastSeen = <String, DateTime>{};
+      try {
+        lastSeen = await NotificationIngestor.lastSeenByApp();
+      } catch (_) {
+        // Notification bridge unavailable; the app list just shows no activity.
+      }
+
+      if (!mounted) return;
+      setState(() {
+        _accounts = accounts;
+        _myNames = names;
+        _links = links;
+        _snapshot = snapshot;
+        _transactions = transactions;
+        _lastSeen = lastSeen;
+        _error = null;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e.toString();
+        _loading = false;
+      });
+    }
+  }
+
+  void _snack(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
+  // ---------------------------------------------------------------- balance
+
+  Future<void> _editBalance() async {
+    final controller = TextEditingController();
+    final value = await showDialog<double>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Current bank balance'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter the total balance across all your bank accounts right '
+              'now (check your bank app).',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                prefixText: 'â‚¹ ',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final parsed =
+                  double.tryParse(controller.text.replaceAll(',', '').trim());
+              if (parsed == null) return;
+              Navigator.pop(ctx, parsed);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (value == null) return;
+    await BalanceHelper.saveSnapshot(value, DateTime.now());
+    await _load();
+  }
+
+  Future<void> _clearBalance() async {
+    await BalanceHelper.clearSnapshot();
+    await _load();
+  }
+
+  Widget _buildBalanceCard() {
+    final snapshot = _snapshot;
+
+    if (snapshot == null) {
+      return _section(
+        title: 'Bank balance',
+        subtitle:
+            "Not set. MY4 can't read your bank balance, so enter it once and "
+            'it will keep it up to date from your transactions.',
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton(
+            onPressed: _editBalance,
+            child: const Text('Set balance'),
+          ),
+        ),
+      );
+    }
+
+    final current = BalanceHelper.currentBalance(snapshot, _transactions);
+
+    return _section(
+      title: 'Bank balance',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'â‚¹${current.toStringAsFixed(2)}',
+            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color:
+                      current >= 0 ? Colors.green.shade800 : Colors.red.shade800,
+                ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'You set â‚¹${snapshot.amount.toStringAsFixed(2)} on '
+            '${_formatDateTime(snapshot.asOf)}. Income and spending recorded '
+            'after that are added or subtracted automatically; transfers '
+            'between your own accounts are ignored.',
+            style: TextStyle(color: Colors.grey.shade700),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            "Payments MY4 can't see (for example small SBI debits with no SMS) "
+            'are not included, so update this now and then.',
+            style: TextStyle(color: Colors.grey.shade700),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: _clearBalance,
+                child: const Text('Clear'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: _editBalance,
+                child: const Text('Update balance'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --------------------------------------------------------------- accounts
+
+  Future<void> _addAccount() async {
+    final bankController = TextEditingController();
+    final last4Controller = TextEditingController();
+
+    final account = await showDialog<BankAccount>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add bank account'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: bankController,
+              autofocus: true,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Bank (for example SBI)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: last4Controller,
+              keyboardType: TextInputType.number,
+              maxLength: 4,
+              decoration: const InputDecoration(
+                labelText: 'Last 4 digits',
+                helperText: 'Exactly 4 digits',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final bank = bankController.text.trim();
+              final last4 = last4Controller.text.trim();
+              if (bank.isEmpty || !RegExp(r'^\d{4}$').hasMatch(last4)) return;
+              Navigator.pop(
+                ctx,
+                BankAccount(
+                  id: 'acc_${DateTime.now().microsecondsSinceEpoch}',
+                  bank: bank,
+                  last4: last4,
+                ),
+              );
+            },
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+
+    if (account == null) return;
+    await DatabaseHelper.instance.insertAccount(account);
+    await _load();
+  }
+
+  Future<void> _deleteAccount(BankAccount account) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Remove account?'),
+        content: Text(
+          'Remove ${account.label}? Your transactions are not affected.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Remove', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+    await DatabaseHelper.instance.deleteAccount(account.id);
+    await _load();
+  }
+
+  Widget _buildAccountsCard() {
+    return _section(
+      title: 'Bank accounts',
+      subtitle: 'The accounts you use with UPI. Only the last 4 digits are kept.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_accounts.isEmpty)
+            Text(
+              'No accounts added yet.',
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
+          for (final account in _accounts)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.account_balance),
+              title: Text(account.bank),
+              subtitle: Text('Account ending ${account.last4}'),
+              trailing: IconButton(
+                icon: const Icon(Icons.delete_outline),
+                tooltip: 'Remove',
+                onPressed: () => _deleteAccount(account),
+              ),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _addAccount,
+              icon: const Icon(Icons.add),
+              label: const Text('Add account'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --------------------------------------------------------------- UPI apps
+
+  /// Day 27: apps grouped by display name. Samsung Wallet and WhatsApp Pay
+  /// each have two package names but should appear as a single row.
+  Map<String, List<String>> get _appGroups {
+    final groups = <String, List<String>>{};
+    for (final entry in upiAppLabels.entries) {
+      if (entry.key == 'com.android.shell') continue;
+      groups.putIfAbsent(entry.value, () => <String>[]).add(entry.key);
+    }
+    return groups;
+  }
+
+  /// Links or unlinks an account for every package name in the group.
+  Future<void> _toggleLink(
+    List<String> appKeys,
+    String accountId,
+    bool linked,
+  ) async {
+    for (final key in appKeys) {
+      await DatabaseHelper.instance.setAppLink(
+        appKey: key,
+        accountId: accountId,
+        linked: linked,
+      );
+    }
+    await _load();
+  }
+
+  Widget _buildAppRow(String label, List<String> keys) {
+    DateTime? lastSeen;
+    for (final key in keys) {
+      final seen = _lastSeen[key];
+      if (seen != null && (lastSeen == null || seen.isAfter(lastSeen))) {
+        lastSeen = seen;
+      }
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.phone_android),
+          title: Text(label),
+          subtitle: Text(
+            lastSeen != null
+                ? 'Last payment notification: ${_formatDateTime(lastSeen)}'
+                : 'No payment notifications captured yet',
+          ),
+        ),
+        if (_accounts.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 8),
+            child: Text(
+              'Add a bank account above to link it to this app.',
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+            ),
+          )
+        else
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Wrap(
+              spacing: 8,
+              children: [
+                for (final account in _accounts)
+                  FilterChip(
+                    label: Text(account.label),
+                    selected: keys.any(
+                      (key) => _links[key]?.contains(account.id) ?? false,
+                    ),
+                    onSelected: (selected) =>
+                        _toggleLink(keys, account.id, selected),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildAppsCard() {
+    return _section(
+      title: 'UPI apps',
+      subtitle:
+          'Payment apps MY4 listens to, and which of your accounts each one uses.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          for (final group in _appGroups.entries)
+            _buildAppRow(group.key, group.value),
+        ],
+      ),
+    );
+  }
+
+  // --------------------------------------------------------------- my names
+
+  Future<void> _addName() async {
+    final controller = TextEditingController();
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Add a name of yours'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Use the name your payment apps show when you send money to '
+              'yourself. A short form like "Sivakumar" also matches longer '
+              'ones that contain it.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final value = controller.text.trim();
+              if (value.length < 4) return;
+              Navigator.pop(ctx, value);
+            },
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+
+    if (name == null) return;
+
+    final alreadySaved =
+        _myNames.any((n) => n.toLowerCase() == name.toLowerCase());
+    if (!alreadySaved) {
+      await DatabaseHelper.instance.addMyName(name);
+    }
+    await _load();
+    await _retagExisting(name);
+  }
+
+  Future<void> _deleteName(String name) async {
+    await DatabaseHelper.instance.deleteMyName(name);
+    await _load();
+  }
+
+  // Offer to tag transactions already in the list that match the new name.
+  Future<void> _retagExisting(String name) async {
+    final all = await DatabaseHelper.instance.getAllTransactions();
+    final matches = all
+        .where((t) => !isTransfer(t) && matchesOwnName(t.title, [name]))
+        .toList();
+    if (matches.isEmpty || !mounted) return;
+
+    final preview = matches.take(6).toList();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(
+          'Tag ${matches.length} existing '
+          'transaction${matches.length == 1 ? '' : 's'} as Transfer?',
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            for (final t in preview)
+              Text(
+                '${t.title} â€¢ ${t.type == TransactionType.credit ? '+' : '-'}'
+                'â‚¹${t.amount.toStringAsFixed(2)} â€¢ ${_formatDate(t.date)}',
+              ),
+            if (matches.length > preview.length)
+              Text('â€¦and ${matches.length - preview.length} more'),
+            const SizedBox(height: 8),
+            const Text(
+              'Transfers stay in the list but no longer count as income or '
+              'spending.',
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Skip'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Tag as Transfer'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    for (final t in matches) {
+      await DatabaseHelper.instance.updateTransaction(
+        Transaction(
+          id: t.id,
+          title: t.title,
+          source: t.source,
+          amount: t.amount,
+          date: t.date,
+          type: t.type,
+          category: transferCategory,
+        ),
+      );
+    }
+    _snack(
+      'Tagged ${matches.length} '
+      'transaction${matches.length == 1 ? '' : 's'} as Transfer',
+    );
+    await _load();
+  }
+
+  Widget _buildNamesCard() {
+    return _section(
+      title: 'My names',
+      subtitle:
+          'Payments to or from these names are treated as transfers between '
+          'your own accounts, not income or spending.',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (_myNames.isEmpty)
+            Text(
+              'No names added yet.',
+              style: TextStyle(color: Colors.grey.shade700),
+            )
+          else
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                for (final name in _myNames)
+                  Chip(
+                    label: Text(name),
+                    onDeleted: () => _deleteName(name),
+                  ),
+              ],
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: _addName,
+              icon: const Icon(Icons.add),
+              label: const Text('Add name'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ------------------------------------------------------------------ layout
+
+  Widget _section({
+    required String title,
+    String? subtitle,
+    required Widget child,
+  }) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: Theme.of(context)
+                  .textTheme
+                  .titleMedium
+                  ?.copyWith(fontWeight: FontWeight.bold),
+            ),
+            if (subtitle != null) ...[
+              const SizedBox(height: 4),
+              Text(subtitle, style: TextStyle(color: Colors.grey.shade700)),
+            ],
+            const SizedBox(height: 12),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Accounts & balance')),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : ListView(
+              padding: const EdgeInsets.all(12),
+              children: [
+                if (_error != null)
+                  Card(
+                    color: Colors.red.shade50,
+                    child: Padding(
+                      padding: const EdgeInsets.all(12),
+                      child: Text(
+                        'Error: $_error',
+                        style: TextStyle(color: Colors.red.shade900),
+                      ),
+                    ),
+                  ),
+                _buildBalanceCard(),
+                _buildAccountsCard(),
+                _buildAppsCard(),
+                _buildNamesCard(),
+              ],
+            ),
+    );
+  }
+}
+
+===== lib\utils\balance_helper.dart =====
+
+import '../db/database_helper.dart';
+import '../models/transaction.dart';
+import 'transfer_helper.dart';
+
+/// The bank balance the user last typed in, and when they typed it.
+class BalanceSnapshot {
+  final double amount;
+  final DateTime asOf;
+
+  const BalanceSnapshot({required this.amount, required this.asOf});
+}
+
+/// MY4 can't read your real bank balance, so the "actual balance" works like
+/// this: you enter what your banks show right now (a snapshot), and MY4 keeps
+/// it current by adding credits and subtracting debits recorded AFTER that
+/// moment. Transfers between your own accounts are ignored, since they
+/// don't change your total.
+class BalanceHelper {
+  static const String _amountKey = 'bank_balance_amount';
+  static const String _asOfKey = 'bank_balance_as_of';
+
+  static Future<BalanceSnapshot?> loadSnapshot() async {
+    final amountText = await DatabaseHelper.instance.getSetting(_amountKey);
+    final asOfText = await DatabaseHelper.instance.getSetting(_asOfKey);
+    if (amountText == null || asOfText == null) return null;
+
+    final amount = double.tryParse(amountText);
+    final asOf = DateTime.tryParse(asOfText);
+    if (amount == null || asOf == null) return null;
+
+    return BalanceSnapshot(amount: amount, asOf: asOf);
+  }
+
+  static Future<void> saveSnapshot(double amount, DateTime asOf) async {
+    await DatabaseHelper.instance.setSetting(_amountKey, amount.toString());
+    await DatabaseHelper.instance.setSetting(_asOfKey, asOf.toIso8601String());
+  }
+
+  static Future<void> clearSnapshot() async {
+    await DatabaseHelper.instance.deleteSetting(_amountKey);
+    await DatabaseHelper.instance.deleteSetting(_asOfKey);
+  }
+
+  /// True if a transaction dated [date] counts as recorded AFTER the balance
+  /// was set at [asOf].
+  ///
+  /// Anything with a time after [asOf] counts. Entries that carry only a date
+  /// (time 00:00, as manual entries and some SMS do) and fall on the same day
+  /// as [asOf] also count: they were most likely added after you set the
+  /// balance, and treating them as earlier would make the balance ignore
+  /// them. Entries dated on earlier days are assumed to be already included
+  /// in the balance you typed.
+  static bool _isAfterSnapshot(DateTime date, DateTime asOf) {
+    if (date.isAfter(asOf)) return true;
+
+    final dateOnly = date.hour == 0 &&
+        date.minute == 0 &&
+        date.second == 0 &&
+        date.millisecond == 0;
+    final sameDay = date.year == asOf.year &&
+        date.month == asOf.month &&
+        date.day == asOf.day;
+    return dateOnly && sameDay;
+  }
+
+  static double _signed(Transaction t) {
+    return t.type == TransactionType.credit ? t.amount : -t.amount;
+  }
+
+  static double currentBalance(
+    BalanceSnapshot snapshot,
+    List<Transaction> transactions,
+  ) {
+    var balance = snapshot.amount;
+    for (final t in transactions) {
+      if (isTransfer(t)) continue;
+      if (!_isAfterSnapshot(t.date, snapshot.asOf)) continue;
+      balance += _signed(t);
+    }
+    return balance;
+  }
+
+  /// The very last moment of [month] (any day in that month works).
+  static DateTime endOfMonth(DateTime month) {
+    return DateTime(month.year, month.month + 1, 1)
+        .subtract(const Duration(microseconds: 1));
+  }
+
+  /// Estimated balance at the moment [at]. After the snapshot it adds the
+  /// transactions recorded between the snapshot and [at]; before the
+  /// snapshot it walks backwards, undoing the transactions recorded between
+  /// [at] and the snapshot. Transfers are ignored either way. It is only as
+  /// complete as the transactions MY4 has recorded.
+  static double balanceAt(
+    BalanceSnapshot snapshot,
+    List<Transaction> transactions,
+    DateTime at,
+  ) {
+    var balance = snapshot.amount;
+
+    if (!at.isBefore(snapshot.asOf)) {
+      for (final t in transactions) {
+        if (isTransfer(t)) continue;
+        if (_isAfterSnapshot(t.date, snapshot.asOf) && !t.date.isAfter(at)) {
+          balance += _signed(t);
+        }
+      }
+    } else {
+      for (final t in transactions) {
+        if (isTransfer(t)) continue;
+        if (!_isAfterSnapshot(t.date, snapshot.asOf) && t.date.isAfter(at)) {
+          balance -= _signed(t);
+        }
+      }
+    }
+
+    return balance;
+  }
+}
+
+===== lib\db\database_helper.dart =====
+
+import 'package:sqflite/sqflite.dart';
+import 'package:crypto/crypto.dart';
+import 'dart:convert';
+import 'package:path/path.dart';
+import '../models/transaction.dart' as model;
+import '../models/budget.dart';
+import '../models/bank_account.dart';
+
+/// How many calendar days apart two entries can be and still be considered
+/// a potential duplicate. Shared by DatabaseHelper.findPotentialDuplicates()
+/// and NeedsReviewStore.findMatching() so both stay in sync â€” change this
+/// one value to widen/narrow the window everywhere at once.
+const int dedupWindowDays = 1;
+
+class DatabaseHelper {
+  DatabaseHelper._privateConstructor();
+  static final DatabaseHelper instance = DatabaseHelper._privateConstructor();
+
+  static Database? _database;
+
+  Future<Database> get database async {
+    if (_database != null) return _database!;
+    _database = await _initDatabase();
+    return _database!;
+  }
+
+  Future<Database> _initDatabase() async {
+    String path = join(await getDatabasesPath(), 'my4.db');
+    return await openDatabase(
+      path,
+      version: 4,
+      onCreate: _onCreate,
+      onUpgrade: _onUpgrade,
+    );
+  }
+
+  Future<void> _onCreate(Database db, int version) async {
+    await db.execute('''
+      CREATE TABLE transactions (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        source TEXT NOT NULL,
+        amount REAL NOT NULL,
+        type TEXT NOT NULL,
+        date TEXT NOT NULL,
+        category TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE budgets (
+        category TEXT PRIMARY KEY,
+        limit_amount REAL NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE processed_sms (
+        sms_hash TEXT PRIMARY KEY,
+        processed_at TEXT NOT NULL
+      )
+    ''');
+    await _createV4Tables(db);
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      await db.execute('''
+        CREATE TABLE budgets (
+          category TEXT PRIMARY KEY,
+          limit_amount REAL NOT NULL
+        )
+      ''');
+    }
+    if (oldVersion < 3) {
+      await db.execute('''
+        CREATE TABLE processed_sms (
+          sms_hash TEXT PRIMARY KEY,
+          processed_at TEXT NOT NULL
+        )
+      ''');
+    }
+    if (oldVersion < 4) {
+      await _createV4Tables(db);
+    }
+  }
+
+  /// Version 4: accounts, "my names" (for own-account transfer detection),
+  /// which UPI app uses which account, and simple key/value settings
+  /// (currently the bank balance snapshot).
+  Future<void> _createV4Tables(Database db) async {
+    await db.execute('''
+      CREATE TABLE accounts (
+        id TEXT PRIMARY KEY,
+        bank TEXT NOT NULL,
+        last4 TEXT NOT NULL
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE my_names (
+        name TEXT PRIMARY KEY
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE app_links (
+        app_key TEXT NOT NULL,
+        account_id TEXT NOT NULL,
+        PRIMARY KEY (app_key, account_id)
+      )
+    ''');
+    await db.execute('''
+      CREATE TABLE app_settings (
+        setting_key TEXT PRIMARY KEY,
+        setting_value TEXT NOT NULL
+      )
+    ''');
+  }
+
+  Future<int> insertTransaction(model.Transaction txn) async {
+    final db = await instance.database;
+    return await db.insert('transactions', txn.toMap());
+  }
+
+  Future<int> updateTransaction(model.Transaction txn) async {
+    final db = await instance.database;
+    return await db.update(
+      'transactions',
+      txn.toMap(),
+      where: 'id = ?',
+      whereArgs: [txn.id],
+    );
+  }
+
+  Future<int> deleteTransaction(String id) async {
+    final db = await instance.database;
+    return await db.delete(
+      'transactions',
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<List<model.Transaction>> getAllTransactions() async {
+    final db = await instance.database;
+    final result = await db.query('transactions', orderBy: 'date DESC');
+    return result.map((map) => model.Transaction.fromMap(map)).toList();
+  }
+
+  // --- Duplicate detection ---
+
+  /// True if [a] and [b] fall within [dedupWindowDays] calendar days of
+  /// each other. Compares calendar days (not raw Duration), so an SMS
+  /// timestamped 11:58pm and a manual entry dated the next morning are
+  /// correctly treated as 1 day apart, not 0.
+  bool _isWithinDedupWindow(DateTime a, DateTime b) {
+    final aDay = DateTime(a.year, a.month, a.day);
+    final bDay = DateTime(b.year, b.month, b.day);
+    final diff = aDay.difference(bDay).inDays.abs();
+    return diff <= dedupWindowDays;
+  }
+
+  /// Finds existing transactions that match [amount], [type], and fall
+  /// within [dedupWindowDays] calendar days of [date]. Deliberately does
+  /// NOT match on title/source â€” those vary too much between how an SMS
+  /// parses a merchant name and how a user manually types one, and fuzzy
+  /// string matching there risks false positives (flagging two genuinely
+  /// different purchases as duplicates). Amount + type + a tight date
+  /// window is a lower-noise signal for "this may already be in the
+  /// ledger" â€” the window (rather than exact-day equality) also catches
+  /// cases where an SMS timestamp and a manually-entered date land on
+  /// adjacent calendar days for what's really the same transaction.
+  Future<List<model.Transaction>> findPotentialDuplicates({
+    required double amount,
+    required model.TransactionType type,
+    required DateTime date,
+  }) async {
+    final db = await instance.database;
+    final rows = await db.query(
+      'transactions',
+      where: 'amount = ?',
+      whereArgs: [amount],
+    );
+
+    final candidates = rows.map((r) => model.Transaction.fromMap(r)).toList();
+
+    return candidates
+        .where((t) => t.type == type && _isWithinDedupWindow(t.date, date))
+        .toList();
+  }
+
+  // --- Budget CRUD ---
+
+  Future<int> setBudget(Budget budget) async {
+    final db = await instance.database;
+    return await db.insert(
+      'budgets',
+      budget.toMap(),
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<int> deleteBudget(String category) async {
+    final db = await instance.database;
+    return await db.delete(
+      'budgets',
+      where: 'category = ?',
+      whereArgs: [category],
+    );
+  }
+
+  Future<List<Budget>> getAllBudgets() async {
+    final db = await instance.database;
+    final result = await db.query('budgets');
+    return result.map((map) => Budget.fromMap(map)).toList();
+  }
+
+  // --- SMS dedup ---
+
+  /// Deterministic fingerprint for an SMS: sender + body + date.
+  static String smsHash({
+    required String sender,
+    required String body,
+    required int? dateMillis,
+  }) {
+    final raw = '$sender|$body|${dateMillis ?? ''}';
+    return sha256.convert(utf8.encode(raw)).toString();
+  }
+
+  Future<bool> isSmsProcessed(String smsHash) async {
+    final db = await instance.database;
+    final result = await db.query(
+      'processed_sms',
+      where: 'sms_hash = ?',
+      whereArgs: [smsHash],
+      limit: 1,
+    );
+    return result.isNotEmpty;
+  }
+
+  Future<void> markSmsProcessed(String smsHash) async {
+    final db = await instance.database;
+    await db.insert(
+      'processed_sms',
+      {
+        'sms_hash': smsHash,
+        'processed_at': DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  /// Reverses [markSmsProcessed] â€” used to undo a needs-review dismissal
+  /// (or a resolved add) so the SMS reappears on the next refresh instead
+  /// of staying silently marked "done".
+  Future<void> unmarkSmsProcessed(String smsHash) async {
+    final db = await instance.database;
+    await db.delete(
+      'processed_sms',
+      where: 'sms_hash = ?',
+      whereArgs: [smsHash],
+    );
+  }
+
+  // --- Bank accounts ---
+
+  Future<int> insertAccount(BankAccount account) async {
+    final db = await instance.database;
+    return await db.insert('accounts', account.toMap());
+  }
+
+  /// Also removes the account from any UPI app links.
+  Future<void> deleteAccount(String id) async {
+    final db = await instance.database;
+    await db.delete('accounts', where: 'id = ?', whereArgs: [id]);
+    await db.delete('app_links', where: 'account_id = ?', whereArgs: [id]);
+  }
+
+  Future<List<BankAccount>> getAllAccounts() async {
+    final db = await instance.database;
+    final rows = await db.query('accounts', orderBy: 'bank ASC, last4 ASC');
+    return rows.map((r) => BankAccount.fromMap(r)).toList();
+  }
+
+  // --- My names (own-account transfer detection) ---
+
+  Future<void> addMyName(String name) async {
+    final db = await instance.database;
+    await db.insert(
+      'my_names',
+      {'name': name},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  Future<void> deleteMyName(String name) async {
+    final db = await instance.database;
+    await db.delete('my_names', where: 'name = ?', whereArgs: [name]);
+  }
+
+  Future<List<String>> getMyNames() async {
+    final db = await instance.database;
+    final rows = await db.query('my_names', orderBy: 'name ASC');
+    return rows.map((r) => r['name'] as String).toList();
+  }
+
+  // --- UPI app <-> account links ---
+
+  /// app package name -> set of linked account ids.
+  Future<Map<String, Set<String>>> getAppLinks() async {
+    final db = await instance.database;
+    final rows = await db.query('app_links');
+    final links = <String, Set<String>>{};
+    for (final r in rows) {
+      final app = r['app_key'] as String;
+      final account = r['account_id'] as String;
+      links.putIfAbsent(app, () => <String>{}).add(account);
+    }
+    return links;
+  }
+
+  Future<void> setAppLink({
+    required String appKey,
+    required String accountId,
+    required bool linked,
+  }) async {
+    final db = await instance.database;
+    if (linked) {
+      await db.insert(
+        'app_links',
+        {'app_key': appKey, 'account_id': accountId},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    } else {
+      await db.delete(
+        'app_links',
+        where: 'app_key = ? AND account_id = ?',
+        whereArgs: [appKey, accountId],
+      );
+    }
+  }
+
+  // --- Key/value settings ---
+
+  Future<String?> getSetting(String key) async {
+    final db = await instance.database;
+    final rows = await db.query(
+      'app_settings',
+      where: 'setting_key = ?',
+      whereArgs: [key],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return rows.first['setting_value'] as String?;
+  }
+
+  Future<void> setSetting(String key, String value) async {
+    final db = await instance.database;
+    await db.insert(
+      'app_settings',
+      {'setting_key': key, 'setting_value': value},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  Future<void> deleteSetting(String key) async {
+    final db = await instance.database;
+    await db.delete(
+      'app_settings',
+      where: 'setting_key = ?',
+      whereArgs: [key],
+    );
+  }
+}
+
+===== lib\utils\transfer_helper.dart =====
+
+import '../models/transaction.dart';
+
+/// Category name for money moved between the user's own accounts.
+/// Transfers are shown in the transaction list but must not count as
+/// Income or Spent, otherwise every own-account move inflates both totals.
+const String transferCategory = 'Transfer';
+
+/// Case-insensitive so a hand-typed "transfer" in the category field works too.
+bool isTransfer(Transaction t) {
+  return t.category.trim().toLowerCase() == transferCategory.toLowerCase();
+}
+
+/// [transactions] without any transfers. Use this before computing totals.
+List<Transaction> withoutTransfers(List<Transaction> transactions) {
+  return transactions.where((t) => !isTransfer(t)).toList();
+}
+
+String _normalizeName(String input) {
+  return input
+      .toLowerCase()
+      .replaceAll(RegExp(r'[^a-z0-9 ]'), ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+}
+
+/// True if [text] (a payer/payee name) contains one of [ownNames].
+///
+/// Matching goes one way only: the name shown on the payment must contain a
+/// saved name. So a saved "Surya Narayanan Sivakumar" matches only that full
+/// name, and never a shorter name such as a parent's "Sivakumar". If your
+/// bank shows your name in more than one form, save each form. Names
+/// shorter than 4 letters are ignored to avoid accidental matches.
+bool matchesOwnName(String text, Iterable<String> ownNames) {
+  final t = _normalizeName(text);
+  if (t.length < 4) return false;
+  for (final name in ownNames) {
+    final n = _normalizeName(name);
+    if (n.length < 4) continue;
+    if (t.contains(n)) return true;
+  }
+  return false;
+}

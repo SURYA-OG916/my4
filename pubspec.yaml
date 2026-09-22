@@ -32,7 +32,7 @@ dependencies:
     sdk: flutter
 
   another_telephony: ^0.4.1
-    
+
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
@@ -41,6 +41,10 @@ dependencies:
   crypto: ^3.0.7
   path_provider: ^2.1.4
   share_plus: ^10.1.4
+
+  # Day 27: app lock / balance unlock (fingerprint with PIN fallback).
+  # Pinned to 2.x on purpose: 3.x changed the API used in app_lock.dart.
+  local_auth: ^2.3.0
 
 dev_dependencies:
   flutter_test:
@@ -64,15 +68,16 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # To add assets to your application, add an assets section, like this:
-  # assets:
-  #   - images/a_dot_burr.jpeg
-  #   - images/a_dot_ham.jpeg
+  # Day 27: optional bank logos. Drop your own PNGs here named after the bank
+  # key, e.g. assets/banks/sbi.png, assets/banks/hdfc.png. Without a PNG the
+  # app shows a coloured monogram badge instead.
+  assets:
+    - assets/banks/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
 
-  # For details regarding adding assets from package dependencies, see
+  # For details regarding assets from package dependencies, see
   # https://flutter.dev/to/asset-from-package
 
   # To add custom fonts to your application, add a fonts section here,

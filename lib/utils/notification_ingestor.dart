@@ -7,6 +7,7 @@ import '../models/transaction.dart';
 import 'category_matcher.dart';
 import 'needs_review_store.dart';
 import 'notification_parser.dart';
+import 'slice_balance.dart';
 import 'transfer_helper.dart';
 
 // Turns captured UPI-app notifications into real transactions.
@@ -14,10 +15,15 @@ import 'transfer_helper.dart';
 // Rules (mirrors the SMS pipeline):
 //  - successful parse + no possible duplicate  -> auto-inserted
 //  - successful parse + possible duplicate     -> "needs review" (user decides)
+//  - Day 28: apps in approvalRequiredPackages (Slice) are NEVER auto-inserted;
+//    every successful parse waits in "needs review" until the user taps Add.
+//    Only earlier entries from the same app are offered as "similar".
 //  - failed parse (no amount, failed/pending/promotional) -> ignored, and NOT
 //    marked processed, so an improved parser can pick it up on a later run
 //  - payments to/from one of the user's own names -> category "Transfer"
 //  - handled notifications are remembered in the processed_sms table
+//  - Day 28: dismissed notifications are also remembered as dismissed, so they
+//    are not shown as "Handled" (added)
 
 class CapturedNotification {
   final String id;
@@ -64,7 +70,13 @@ class CapturedNotification {
   }
 }
 
-enum NotificationStatus { added, alreadyHandled, needsReview, ignored }
+enum NotificationStatus {
+  added,
+  alreadyHandled,
+  needsReview,
+  ignored,
+  dismissed,
+}
 
 class NotificationEntry {
   final CapturedNotification notification;
@@ -77,12 +89,17 @@ class NotificationEntry {
   /// Human-readable descriptions of the possible duplicates (needsReview only).
   final List<String> duplicateNotes;
 
+  /// True when this item is waiting only because its app (Slice) always needs
+  /// the user's permission, not because it looks like a duplicate.
+  final bool awaitingApproval;
+
   const NotificationEntry({
     required this.notification,
     required this.parsed,
     required this.status,
     this.draft,
     this.duplicateNotes = const [],
+    this.awaitingApproval = false,
   });
 }
 
@@ -110,15 +127,21 @@ class NotificationIngestResult {
           e.status == NotificationStatus.alreadyHandled)
       .toList();
 
-  /// Promotions, chats, rewards, failed payments: captured but not payments.
-  List<NotificationEntry> get ignored =>
-      entries.where((e) => e.status == NotificationStatus.ignored).toList();
+  /// Promotions, chats, rewards, failed payments, and payments the user
+  /// dismissed: captured but not added as transactions.
+  List<NotificationEntry> get ignored => entries
+      .where((e) =>
+          e.status == NotificationStatus.ignored ||
+          e.status == NotificationStatus.dismissed)
+      .toList();
 }
 
 class NotificationIngestor {
   static const MethodChannel _channel = MethodChannel('my4/notifications');
 
   static Future<NotificationIngestResult>? _inFlight;
+
+  static String _dismissedKey(String hash) => 'dismissed_notif_$hash';
 
   /// Reads the native queue and ingests anything new. Safe to call from
   /// several places at once: concurrent callers share one run.
@@ -160,10 +183,15 @@ class NotificationIngestor {
       final parsed = n.parse();
 
       if (await DatabaseHelper.instance.isSmsProcessed(n.hash)) {
+        final dismissed = await DatabaseHelper.instance
+                .getSetting(_dismissedKey(n.hash)) !=
+            null;
         entries.add(NotificationEntry(
           notification: n,
           parsed: parsed,
-          status: NotificationStatus.alreadyHandled,
+          status: dismissed
+              ? NotificationStatus.dismissed
+              : NotificationStatus.alreadyHandled,
         ));
         continue;
       }
@@ -184,6 +212,28 @@ class NotificationIngestor {
         type: draft.type,
         date: draft.date,
       );
+
+      // Day 28: Slice always waits for the user's permission. Only earlier
+      // entries from the same app count as "similar", so a ₹1 credit from
+      // Samsung Wallet no longer looks like a duplicate of a ₹1 Slice credit.
+      if (approvalRequiredPackages.contains(n.packageName)) {
+        final sameApp = duplicates
+            .where((t) => t.source.startsWith(parsed.appLabel))
+            .toList();
+        entries.add(NotificationEntry(
+          notification: n,
+          parsed: parsed,
+          status: NotificationStatus.needsReview,
+          draft: draft,
+          awaitingApproval: true,
+          duplicateNotes: [
+            for (final t in sameApp)
+              'Similar: ${t.title} • ₹${t.amount.toStringAsFixed(2)} • ${_formatDate(t.date)}',
+          ],
+        ));
+        continue;
+      }
+
       final pendingSms = NeedsReviewStore.instance.findMatching(
         amount: draft.amount,
         type: draft.type,
@@ -261,10 +311,19 @@ class NotificationIngestor {
     if (draft == null) return;
     await DatabaseHelper.instance.insertTransaction(draft);
     await DatabaseHelper.instance.markSmsProcessed(entry.notification.hash);
+
+    // Slice quotes its own balance ("Avl. Bal. ₹2.14"). Keep it as the Slice
+    // balance, but only when the user approved the payment.
+    final balance = entry.parsed.availableBalance;
+    if (balance != null && entry.notification.packageName == slicePackage) {
+      await SliceBalance.saveIfNewer(balance, entry.notification.postedAt);
+    }
   }
 
   static Future<void> dismissReviewItem(NotificationEntry entry) async {
-    await DatabaseHelper.instance.markSmsProcessed(entry.notification.hash);
+    final hash = entry.notification.hash;
+    await DatabaseHelper.instance.markSmsProcessed(hash);
+    await DatabaseHelper.instance.setSetting(_dismissedKey(hash), '1');
   }
 
   // --- Info for the Accounts screen ---

@@ -3,10 +3,13 @@ import 'package:flutter/material.dart';
 import '../db/database_helper.dart';
 import '../models/bank_account.dart';
 import '../models/transaction.dart';
+import '../utils/account_balance.dart';
 import '../utils/balance_helper.dart';
 import '../utils/notification_ingestor.dart';
 import '../utils/notification_parser.dart';
+import '../utils/slice_balance.dart';
 import '../utils/transfer_helper.dart';
+import '../widgets/bank_balance_tile.dart';
 
 String _two(int n) => n.toString().padLeft(2, '0');
 
@@ -30,6 +33,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
   List<String> _myNames = [];
   Map<String, Set<String>> _links = {};
   BalanceSnapshot? _snapshot;
+  SliceBalanceSnapshot? _sliceBalance;
+  Map<String, AccountBalanceSnapshot> _accountBalances = {};
   List<Transaction> _transactions = [];
   Map<String, DateTime> _lastSeen = {};
 
@@ -42,11 +47,24 @@ class _AccountsScreenState extends State<AccountsScreen> {
   Future<void> _load() async {
     try {
       final db = DatabaseHelper.instance;
+      final transactions = await db.getAllTransactions();
+
+      // Day 28: Slice appears as its own bank account. Create it the first
+      // time a Slice payment has been added.
+      await _ensureSliceAccount(transactions);
+
       final accounts = await db.getAllAccounts();
       final names = await db.getMyNames();
       final links = await db.getAppLinks();
-      final snapshot = await BalanceHelper.loadSnapshot();
-      final transactions = await db.getAllTransactions();
+      // Bank-only snapshot: Slice is shown separately below.
+      final snapshot = await BalanceHelper.loadSnapshot(includeSlice: false);
+      final sliceBalance = await SliceBalance.load();
+
+      final accountBalances = <String, AccountBalanceSnapshot>{};
+      for (final account in accounts) {
+        final balance = await AccountBalance.load(account.id);
+        if (balance != null) accountBalances[account.id] = balance;
+      }
 
       var lastSeen = <String, DateTime>{};
       try {
@@ -61,6 +79,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
         _myNames = names;
         _links = links;
         _snapshot = snapshot;
+        _sliceBalance = sliceBalance;
+        _accountBalances = accountBalances;
         _transactions = transactions;
         _lastSeen = lastSeen;
         _error = null;
@@ -73,6 +93,38 @@ class _AccountsScreenState extends State<AccountsScreen> {
         _loading = false;
       });
     }
+  }
+
+  /// Creates the "Slice" bank account (last 4 digits taken from an existing
+  /// Slice transaction, e.g. "Slice • 9809") and links the Slice app to it.
+  /// Does nothing if it already exists or no Slice payment has been added yet.
+  Future<void> _ensureSliceAccount(List<Transaction> transactions) async {
+    final db = DatabaseHelper.instance;
+    final existing = await db.getAllAccounts();
+    if (existing.any((a) => isSliceSource(a.bank))) return;
+
+    String? last4;
+    for (final t in transactions) {
+      if (!isSliceSource(t.source)) continue;
+      final match = RegExp(r'(\d{4})\s*$').firstMatch(t.source);
+      if (match != null) {
+        last4 = match.group(1);
+        break;
+      }
+    }
+    if (last4 == null) return;
+
+    final account = BankAccount(
+      id: 'acc_slice_$last4',
+      bank: 'Slice',
+      last4: last4,
+    );
+    await db.insertAccount(account);
+    await db.setAppLink(
+      appKey: slicePackage,
+      accountId: account.id,
+      linked: true,
+    );
   }
 
   void _snack(String message) {
@@ -96,7 +148,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
           children: [
             const Text(
               'Enter the total balance across all your bank accounts right '
-              'now (check your bank app).',
+              'now (check your bank app). Do not include Slice: it is tracked '
+              'separately.',
             ),
             const SizedBox(height: 12),
             TextField(
@@ -159,6 +212,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
     }
 
     final current = BalanceHelper.currentBalance(snapshot, _transactions);
+    final slice = _sliceBalance;
 
     return _section(
       title: 'Bank balance',
@@ -181,6 +235,15 @@ class _AccountsScreenState extends State<AccountsScreen> {
             'between your own accounts are ignored.',
             style: TextStyle(color: Colors.grey.shade700),
           ),
+          if (slice != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              'The balance on the main screen is this plus your Slice balance '
+              '(₹${slice.amount.toStringAsFixed(2)}): '
+              '₹${(current + slice.amount).toStringAsFixed(2)} in total.',
+              style: TextStyle(color: Colors.grey.shade700),
+            ),
+          ],
           const SizedBox(height: 4),
           Text(
             "Payments MY4 can't see (for example small SBI debits with no SMS) "
@@ -295,13 +358,158 @@ class _AccountsScreenState extends State<AccountsScreen> {
 
     if (confirmed != true) return;
     await DatabaseHelper.instance.deleteAccount(account.id);
+    await AccountBalance.clear(account.id);
     await _load();
+  }
+
+  // Balance for one bank account (typed in by the user).
+  Future<void> _editAccountBalance(BankAccount account) async {
+    final existing = _accountBalances[account.id];
+    final controller = TextEditingController(
+      text: existing == null ? '' : existing.amount.toStringAsFixed(2),
+    );
+    final value = await showDialog<double>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Balance for ${account.label}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter what this account shows in your bank app right now. '
+              "MY4 can't read it, so update it now and then.",
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                prefixText: '₹ ',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final parsed =
+                  double.tryParse(controller.text.replaceAll(',', '').trim());
+              if (parsed == null) return;
+              Navigator.pop(ctx, parsed);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (value == null) return;
+    await AccountBalance.save(account.id, value, DateTime.now());
+    await _load();
+  }
+
+  Future<void> _clearAccountBalance(BankAccount account) async {
+    await AccountBalance.clear(account.id);
+    await _load();
+  }
+
+  Future<void> _showAccountSheet(BankAccount account) async {
+    final isSlice = isSliceSource(account.bank);
+    final hasBalance = _accountBalances.containsKey(account.id);
+
+    await showModalBottomSheet<void>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Wrap(
+          children: [
+            if (isSlice)
+              const ListTile(
+                leading: Icon(Icons.info_outline),
+                title: Text('Balance updates automatically'),
+                subtitle: Text(
+                  'It comes from the "Avl. Bal." in the Slice notifications '
+                  'you approve in the Notification Reader, and drops when you '
+                  'approve a payment you sent.',
+                ),
+              )
+            else ...[
+              ListTile(
+                leading: const Icon(Icons.edit),
+                title: Text(hasBalance ? 'Update balance' : 'Set balance'),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _editAccountBalance(account);
+                },
+              ),
+              if (hasBalance)
+                ListTile(
+                  leading: const Icon(Icons.backspace_outlined),
+                  title: const Text('Clear balance'),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _clearAccountBalance(account);
+                  },
+                ),
+              ListTile(
+                leading: const Icon(Icons.delete_outline, color: Colors.red),
+                title: const Text(
+                  'Remove account',
+                  style: TextStyle(color: Colors.red),
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _deleteAccount(account);
+                },
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAccountTile(BankAccount account) {
+    final isSlice = isSliceSource(account.bank);
+    double? balance;
+    var label = 'Account ending ${account.last4}';
+
+    if (isSlice) {
+      final slice = _sliceBalance;
+      balance = slice?.amount;
+      label += slice == null
+          ? ' • updates from Slice notifications'
+          : ' • as of ${_formatDateTime(slice.asOf)}';
+    } else {
+      final snap = _accountBalances[account.id];
+      balance = snap?.amount;
+      if (snap != null) {
+        label += ' • set ${_formatDate(snap.asOf)}';
+      }
+    }
+
+    return BankBalanceTile(
+      bankName: account.bank,
+      accountLabel: label,
+      balance: balance,
+      onTap: () => _showAccountSheet(account),
+    );
   }
 
   Widget _buildAccountsCard() {
     return _section(
       title: 'Bank accounts',
-      subtitle: 'The accounts you use with UPI. Only the last 4 digits are kept.',
+      subtitle:
+          'Each bank shows its own balance, hidden until you unlock it with '
+          'the eye icon. Tap a bank to set its balance. Slice updates '
+          'automatically.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -310,18 +518,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
               'No accounts added yet.',
               style: TextStyle(color: Colors.grey.shade700),
             ),
-          for (final account in _accounts)
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.account_balance),
-              title: Text(account.bank),
-              subtitle: Text('Account ending ${account.last4}'),
-              trailing: IconButton(
-                icon: const Icon(Icons.delete_outline),
-                tooltip: 'Remove',
-                onPressed: () => _deleteAccount(account),
-              ),
-            ),
+          for (final account in _accounts) _buildAccountTile(account),
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton.icon(
@@ -337,63 +534,104 @@ class _AccountsScreenState extends State<AccountsScreen> {
 
   // --------------------------------------------------------------- UPI apps
 
-  Future<void> _toggleLink(String appKey, String accountId, bool linked) async {
-    await DatabaseHelper.instance.setAppLink(
-      appKey: appKey,
-      accountId: accountId,
-      linked: linked,
-    );
+  /// Day 27: apps grouped by display name. Samsung Wallet and WhatsApp Pay
+  /// each have two package names but should appear as a single row.
+  Map<String, List<String>> get _appGroups {
+    final groups = <String, List<String>>{};
+    for (final entry in upiAppLabels.entries) {
+      if (entry.key == 'com.android.shell') continue;
+      groups.putIfAbsent(entry.value, () => <String>[]).add(entry.key);
+    }
+    return groups;
+  }
+
+  /// Links or unlinks an account for every package name in the group.
+  Future<void> _toggleLink(
+    List<String> appKeys,
+    String accountId,
+    bool linked,
+  ) async {
+    for (final key in appKeys) {
+      await DatabaseHelper.instance.setAppLink(
+        appKey: key,
+        accountId: accountId,
+        linked: linked,
+      );
+    }
     await _load();
   }
 
-  Widget _buildAppsCard() {
-    final apps =
-        upiAppLabels.entries.where((e) => e.key != 'com.android.shell');
+  Widget _buildAppRow(String label, List<String> keys) {
+    DateTime? lastSeen;
+    for (final key in keys) {
+      final seen = _lastSeen[key];
+      if (seen != null && (lastSeen == null || seen.isAfter(lastSeen))) {
+        lastSeen = seen;
+      }
+    }
 
+    // Day 28: the Slice bank account belongs to the Slice app only, so it is
+    // not offered under Google Pay, PhonePe, Paytm and the rest. The Slice app
+    // itself lists every account, because Slice can link other banks too.
+    final isSliceApp = keys.contains(slicePackage);
+    final linkable = isSliceApp
+        ? _accounts
+        : _accounts.where((a) => !isSliceSource(a.bank)).toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.phone_android),
+          title: Text(label),
+          subtitle: Text(
+            lastSeen != null
+                ? 'Last payment notification: ${_formatDateTime(lastSeen)}'
+                : 'No payment notifications captured yet',
+          ),
+        ),
+        if (linkable.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 8),
+            child: Text(
+              'Add a bank account above to link it to this app.',
+              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+            ),
+          )
+        else
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Wrap(
+              spacing: 8,
+              children: [
+                for (final account in linkable)
+                  FilterChip(
+                    label: Text(account.label),
+                    selected: keys.any(
+                      (key) => _links[key]?.contains(account.id) ?? false,
+                    ),
+                    onSelected: (selected) =>
+                        _toggleLink(keys, account.id, selected),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildAppsCard() {
     return _section(
       title: 'UPI apps',
       subtitle:
-          'Payment apps MY4 listens to, and which of your accounts each one uses.',
+          'Payment apps MY4 listens to, and which of your accounts each one '
+          'uses. The Slice account is only used by the Slice app.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final app in apps) ...[
-            ListTile(
-              contentPadding: EdgeInsets.zero,
-              leading: const Icon(Icons.phone_android),
-              title: Text(app.value),
-              subtitle: Text(
-                _lastSeen[app.key] != null
-                    ? 'Last payment notification: ${_formatDateTime(_lastSeen[app.key]!)}'
-                    : 'No payment notifications captured yet',
-              ),
-            ),
-            if (_accounts.isEmpty)
-              Padding(
-                padding: const EdgeInsets.only(left: 4, bottom: 8),
-                child: Text(
-                  'Add a bank account above to link it to this app.',
-                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-                ),
-              )
-            else
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Wrap(
-                  spacing: 8,
-                  children: [
-                    for (final account in _accounts)
-                      FilterChip(
-                        label: Text(account.label),
-                        selected:
-                            _links[app.key]?.contains(account.id) ?? false,
-                        onSelected: (selected) =>
-                            _toggleLink(app.key, account.id, selected),
-                      ),
-                  ],
-                ),
-              ),
-          ],
+          for (final group in _appGroups.entries)
+            _buildAppRow(group.key, group.value),
         ],
       ),
     );

@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../utils/notification_ingestor.dart';
 
-// Captured UPI notifications are turned into real transactions automatically.
-// Possible duplicates wait here for a decision. Notifications that are not
+// Captured UPI notifications are turned into real transactions automatically,
+// except Slice payments, which always wait here for your OK. Possible
+// duplicates also wait here for a decision. Notifications that are not
 // payments (promotions, chats, rewards, failed payments) are hidden unless
 // you switch them on.
 
@@ -139,7 +140,8 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
         ),
         subtitle: Text(
           _enabled
-              ? 'Listening to Google Pay, PhonePe, Paytm, BHIM and CRED only.'
+              ? 'Listening to Google Pay, PhonePe, Paytm, BHIM, CRED, '
+                  'Samsung Wallet, WhatsApp Pay and Slice payments only.'
               : "MY4 can't see UPI app notifications until you grant access.",
         ),
         trailing: FilledButton(
@@ -165,6 +167,7 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
 
   Widget _buildReviewTile(NotificationEntry entry) {
     final n = entry.notification;
+    final approval = entry.awaitingApproval;
     return Card(
       color: Colors.orange.shade50,
       child: Padding(
@@ -183,7 +186,9 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
             ),
             const SizedBox(height: 6),
             Text(
-              '⚠ Possible duplicate: ${entry.parsed.summary}',
+              approval
+                  ? 'Add this ${n.appLabel} payment? ${entry.parsed.summary}'
+                  : '⚠ Possible duplicate: ${entry.parsed.summary}',
               style: TextStyle(
                 color: Colors.orange.shade900,
                 fontWeight: FontWeight.w600,
@@ -202,7 +207,7 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
                 const SizedBox(width: 8),
                 FilledButton(
                   onPressed: () => _addAnyway(entry),
-                  child: const Text('Add anyway'),
+                  child: Text(approval ? 'Add' : 'Add anyway'),
                 ),
               ],
             ),
@@ -224,6 +229,10 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
         break;
       case NotificationStatus.alreadyHandled:
         statusText = '✓ Handled: ${entry.parsed.summary}';
+        statusColor = Colors.grey.shade700;
+        break;
+      case NotificationStatus.dismissed:
+        statusText = '✗ Dismissed by you: ${entry.parsed.summary}';
         statusColor = Colors.grey.shade700;
         break;
       case NotificationStatus.ignored:
@@ -326,8 +335,9 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
                     child: SwitchListTile(
                       title: Text('Show ignored (${ignored.length})'),
                       subtitle: const Text(
-                        'Promotions, rewards and failed or pending payments. '
-                        'These are never added as transactions.',
+                        'Promotions, rewards, failed or pending payments, and '
+                        'ones you dismissed. These are never added as '
+                        'transactions.',
                       ),
                       value: _showIgnored,
                       onChanged: (value) {

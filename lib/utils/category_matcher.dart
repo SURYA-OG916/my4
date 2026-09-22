@@ -31,6 +31,20 @@ class CategoryMatcher {
     'jio': 'Subscription',
     'airtel': 'Subscription',
 
+    // Transport (Day 27). Kept to whole-name keywords on purpose: short
+    // ones like "bus" or "ola" would also match unrelated words.
+    'state transport': 'Transport',
+    'tnstc': 'Transport',
+    'transport': 'Transport',
+    'irctc': 'Transport',
+    'railway': 'Transport',
+    'redbus': 'Transport',
+    'uber': 'Transport',
+    'rapido': 'Transport',
+    'petrol': 'Transport',
+    'petroleum': 'Transport',
+    'fuel': 'Transport',
+
     // Income (rarely a "merchant" but VPAs sometimes carry these words)
     'salary': 'Income',
     'refund': 'Income',

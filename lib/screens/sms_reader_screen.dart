@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
-import 'package:another_telephony/telephony.dart';
+import 'package:another_telephony/telephony.dart' hide SmsFilter;
 import '../db/database_helper.dart';
 import '../models/transaction.dart';
 import '../utils/sms_parser.dart';
+import '../utils/sms_filter.dart';
+import '../utils/slice_balance.dart';
 import '../utils/category_helper.dart';
 import '../utils/duplicate_helper.dart';
 import '../utils/needs_review_store.dart';
 import 'add_transaction_screen.dart';
+import 'needs_review_screen.dart';
 
 class SmsReaderScreen extends StatefulWidget {
   const SmsReaderScreen({super.key});
@@ -89,24 +92,15 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
     await _parseAndInsertTransactions(messages);
   }
 
-  // Rough first-pass filter — known bank/UPI sender ID patterns.
+  // Day 28: first-pass filter now lives in lib/utils/sms_filter.dart so
+  // promos, OTPs, due reminders etc. are rejected before parsing.
+  // (another_telephony also exports a class named SmsFilter, so it is
+  // hidden in the import above to avoid a name clash.)
   bool _looksLikeTransactionSms(SmsMessage msg) {
-    final String address = (msg.address ?? '').toUpperCase();
-    final String body = (msg.body ?? '').toLowerCase();
-
-    final bool senderLooksLikeBank = RegExp(
-      r'^[A-Z]{2}-?[A-Z0-9]{3,}',
-    ).hasMatch(address);
-
-    final bool bodyMentionsTransaction = body.contains('debited') ||
-        body.contains('credited') ||
-        body.contains('upi') ||
-        body.contains('a/c') ||
-        body.contains('account') ||
-        body.contains('spent') ||
-        body.contains('paid');
-
-    return senderLooksLikeBank && bodyMentionsTransaction;
+    return SmsFilter.looksLikeTransaction(
+      sender: msg.address ?? '',
+      body: msg.body ?? '',
+    );
   }
 
   /// Runs every flagged SMS through SmsParser, skipping any SMS whose
@@ -115,6 +109,8 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
   /// immediately. Successful parses that DO match an existing transaction
   /// (same amount/type/day) are diverted into Needs Review instead of
   /// silently auto-inserting a likely duplicate — the user decides there.
+  /// Day 28: Slice SMS are never auto-inserted; every one waits in Needs
+  /// Review for the user's OK (only earlier Slice entries count as "similar").
   /// True failures are collected into [_needsReview] as before. Neither
   /// diverted duplicates nor true failures are marked processed — an
   /// unresolved needs-review SMS must keep reappearing on every refresh
@@ -156,10 +152,19 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
           date: txn.date,
         );
 
-        if (duplicates.isNotEmpty) {
+        // Slice always asks first, and is only compared with other Slice
+        // entries so a same-amount payment from another app isn't flagged.
+        final askFirst = isSliceSource(txn.source);
+        final similar = askFirst
+            ? duplicates.where((t) => isSliceSource(t.source)).toList()
+            : duplicates;
+
+        if (similar.isNotEmpty || askFirst) {
           reviewList.add(SmsParseResult.failure(
-            'Possible duplicate of an existing transaction (same amount, '
-            'type, and date)',
+            similar.isNotEmpty
+                ? 'Possible duplicate of an existing transaction (same '
+                    'amount, type, and date)'
+                : 'Slice payment: waiting for your OK',
             result.rawBody,
             result.sender,
             partialAmount: txn.amount,
@@ -186,8 +191,8 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
         ..clear()
         ..addAll(reviewList);
     });
-    // Keep the cross-screen store in sync so main.dart's "+" add flow can
-    // see what's currently pending here.
+    // Keep the cross-screen store in sync so main.dart's "+" add flow and
+    // the Needs Review page can see what's currently pending here.
     NeedsReviewStore.instance.setAll(_needsReview);
 
     // New categories may have been introduced by auto-added transactions
@@ -213,6 +218,22 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
       type: result.partialType ?? TransactionType.debit,
       category: '',
     );
+  }
+
+  /// Day 27: opens the separate Needs Review page. The page reads its list
+  /// from NeedsReviewStore and calls back into this screen's add/dismiss
+  /// handlers, so all the existing resolve/undo logic stays in one place.
+  Future<void> _openNeedsReviewPage() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => NeedsReviewScreen(
+          onAdd: _openNeedsReviewItem,
+          onDismiss: _dismissNeedsReviewItem,
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
   }
 
   Future<void> _openNeedsReviewItem(SmsParseResult result) async {
@@ -247,6 +268,19 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
     }
 
     await DatabaseHelper.instance.insertTransaction(saved);
+
+    // Slice's SMS for money you send from the Slice bank account carries no
+    // balance, so lower the stored Slice balance by the amount (only for
+    // payments newer than that balance). Credit card items are charged to the
+    // card, not the bank account, so they don't touch the balance.
+    if (saved.type == TransactionType.debit &&
+        isSliceSource(saved.source) &&
+        !saved.source.toLowerCase().contains('card')) {
+      await SliceBalance.applyPayment(
+        signedAmount: -saved.amount,
+        date: saved.date,
+      );
+    }
 
     final resolvedHash = DatabaseHelper.smsHash(
       sender: result.sender,
@@ -409,6 +443,28 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
     );
   }
 
+  Widget _buildNeedsReviewCard() {
+    final count = _needsReview.length;
+    return Card(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      color: count > 0 ? Colors.orange.shade50 : null,
+      child: ListTile(
+        leading: Icon(
+          count > 0 ? Icons.warning_amber : Icons.check_circle_outline,
+          color: count > 0 ? Colors.orange : Colors.green,
+        ),
+        title: Text('Needs review ($count)'),
+        subtitle: Text(
+          count > 0
+              ? 'Messages MY4 could not add automatically. Tap to review.'
+              : 'Nothing waiting.',
+        ),
+        trailing: const Icon(Icons.chevron_right),
+        onTap: _openNeedsReviewPage,
+      ),
+    );
+  }
+
   Widget _buildBody(List<SmsMessage> transactionLike, List<SmsMessage> other) {
     if (_permissionDenied) {
       return Center(
@@ -445,34 +501,25 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
       children: [
         Padding(
           padding: const EdgeInsets.all(12.0),
-          child: Text(
-            'Auto-added: $_autoAddedCount   •   '
-            'Needs review: ${_needsReview.length}   •   '
-            'Already processed (skipped): $_skippedAlreadyProcessed   •   '
-            'Likely transaction SMS: ${transactionLike.length} / ${_messages.length} total',
-            style: const TextStyle(fontWeight: FontWeight.bold),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Auto-added: $_autoAddedCount   •   '
+                'Already processed (skipped): $_skippedAlreadyProcessed',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Likely transaction SMS: ${transactionLike.length} / '
+                '${_messages.length} total',
+                style: TextStyle(color: Colors.grey.shade700),
+              ),
+            ],
           ),
         ),
-        if (_needsReview.isNotEmpty) ...[
-          const Divider(thickness: 2, color: Colors.orange),
-          Padding(
-            padding: const EdgeInsets.all(12.0),
-            child: Text(
-              'Needs review — tap to add (${_needsReview.length})',
-              style: const TextStyle(
-                fontWeight: FontWeight.bold,
-                color: Colors.orange,
-              ),
-            ),
-          ),
-          ..._needsReview.map(
-            (result) => _NeedsReviewTile(
-              result: result,
-              onAdd: () => _openNeedsReviewItem(result),
-              onDismiss: () => _dismissNeedsReviewItem(result),
-            ),
-          ),
-        ],
+        _buildNeedsReviewCard(),
+        const SizedBox(height: 8),
         const Divider(thickness: 2),
         Padding(
           padding: const EdgeInsets.all(12.0),
@@ -492,47 +539,6 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
         ),
         ...other.map((msg) => _SmsTile(msg: msg, flagged: false)),
       ],
-    );
-  }
-}
-
-class _NeedsReviewTile extends StatelessWidget {
-  final SmsParseResult result;
-  final VoidCallback onAdd;
-  final VoidCallback onDismiss;
-
-  const _NeedsReviewTile({
-    required this.result,
-    required this.onAdd,
-    required this.onDismiss,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ListTile(
-      leading: const Icon(Icons.warning_amber, color: Colors.orange),
-      title: Text(result.sender),
-      subtitle: Text(
-        '${result.failureReason}\n${result.rawBody}',
-        maxLines: 3,
-        overflow: TextOverflow.ellipsis,
-      ),
-      isThreeLine: true,
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            icon: const Icon(Icons.add_circle_outline, color: Colors.green),
-            tooltip: 'Add as transaction',
-            onPressed: onAdd,
-          ),
-          IconButton(
-            icon: const Icon(Icons.close, color: Colors.grey),
-            tooltip: 'Dismiss (already added / not a transaction)',
-            onPressed: onDismiss,
-          ),
-        ],
-      ),
     );
   }
 }

@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart';
+
 import '../models/transaction.dart';
 import '../utils/sms_parser.dart';
 import '../db/database_helper.dart' show dedupWindowDays;
@@ -11,7 +13,10 @@ import '../db/database_helper.dart' show dedupWindowDays;
 /// This store closes that gap: SmsReaderScreen keeps it in sync with its
 /// local _needsReview list, and main.dart reads it when checking for
 /// duplicates on manual add.
-class NeedsReviewStore {
+///
+/// Day 27: now a ChangeNotifier so the separate Needs Review page rebuilds
+/// whenever the list changes.
+class NeedsReviewStore extends ChangeNotifier {
   NeedsReviewStore._privateConstructor();
   static final NeedsReviewStore instance =
       NeedsReviewStore._privateConstructor();
@@ -24,6 +29,7 @@ class NeedsReviewStore {
   /// _needsReview list changes (initial parse, or an item resolved/cleared).
   void setAll(List<SmsParseResult> items) {
     _items = List.from(items);
+    notifyListeners();
   }
 
   /// True if [a] and [b] fall within [dedupWindowDays] calendar days of

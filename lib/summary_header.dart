@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'models/transaction.dart';
+import 'utils/app_lock.dart';
 import 'utils/transfer_helper.dart';
 
 class SummaryHeader extends StatelessWidget {
@@ -57,7 +58,7 @@ class SummaryHeader extends StatelessWidget {
           _buildColumn('Income', totalCredit, Colors.green),
           _buildColumn('Spent', totalDebit, Colors.red),
           if (balance != null)
-            _buildColumn(
+            _buildLockedBalanceColumn(
                 balanceLabel, balance, balance >= 0 ? Colors.green : Colors.red)
           else
             _buildColumn('Net', net, net >= 0 ? Colors.green : Colors.red),
@@ -78,6 +79,52 @@ class SummaryHeader extends StatelessWidget {
               color: color, fontWeight: FontWeight.bold, fontSize: 16),
         ),
       ],
+    );
+  }
+
+  /// Day 27: the real bank balance is hidden until the user unlocks it with
+  /// their fingerprint (or phone PIN). Tap to reveal; tap again to hide.
+  Widget _buildLockedBalanceColumn(String label, double value, Color color) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: AppLock.instance.balancesVisible,
+      builder: (context, visible, _) {
+        return InkWell(
+          onTap: () {
+            if (visible) {
+              AppLock.instance.hideBalances();
+            } else {
+              AppLock.instance.revealBalances();
+            }
+          },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(label,
+                      style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                  const SizedBox(width: 4),
+                  Icon(
+                    visible ? Icons.visibility_off : Icons.visibility,
+                    size: 14,
+                    color: Colors.grey,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                visible ? '₹${value.toStringAsFixed(2)}' : '₹ ••••••',
+                style: TextStyle(
+                  color: visible ? color : Colors.grey,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

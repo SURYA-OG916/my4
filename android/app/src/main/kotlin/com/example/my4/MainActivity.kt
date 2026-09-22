@@ -3,11 +3,13 @@ package com.example.my4
 import android.content.ComponentName
 import android.content.Intent
 import android.provider.Settings
-import io.flutter.embedding.android.FlutterActivity
+import io.flutter.embedding.android.FlutterFragmentActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
-class MainActivity : FlutterActivity() {
+// Day 27: FlutterFragmentActivity (instead of FlutterActivity) is required by
+// the local_auth plugin for the fingerprint prompt.
+class MainActivity : FlutterFragmentActivity() {
 
     private val channelName = "my4/notifications"
 
