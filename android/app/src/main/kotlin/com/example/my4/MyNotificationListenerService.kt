@@ -28,7 +28,7 @@ private val ALLOWED_PACKAGES = setOf(
 )
 
 // WhatsApp also posts every chat message. For these packages we apply extra
-// filters so that chats are dropped before their text is ever read or stored.
+// filters so that chats are dropped before their text is ever stored.
 private val WHATSAPP_PACKAGES = setOf("com.whatsapp", "com.whatsapp.w4b")
 
 // Wording that reads like a money movement.
@@ -42,10 +42,31 @@ private val WHATSAPP_PAYMENT_PHRASE = Regex(
 private val WHATSAPP_AMOUNT_MOVE =
     Regex("(?i)\\b(sent|paid|received)\\s+(₹|rs\\.?|inr)\\s*[0-9]")
 
+// Day 31: strict credit form used to let a payment through even when
+// WhatsApp posts it in a chat-style (category=msg) notification:
+// "<name> sent ₹1.00 to You". Deliberately narrow, so ordinary chat text
+// like "I sent ₹500 yesterday" is not let through.
+private val WHATSAPP_CREDIT_FORM = Regex(
+    "(?i)\\b(sent|paid)\\s+(₹|rs\\.?|inr)\\s*[0-9][0-9,]*(\\.[0-9]{1,2})?\\s+to\\s+you\\s*[.!]?\\s*$"
+)
+
 // A notification is only worth keeping if it mentions an amount of money
 // (₹250, Rs 250, Rs. 1,250.50, INR 99). This drops chat messages, "tap to
 // reveal" rewards and other notifications that can never be a transaction.
 private val AMOUNT_PATTERN = Regex("(?i)(₹|\\brs\\.?|\\binr)\\s*[0-9]")
+
+// Day 31: WhatsApp sprinkles invisible direction/zero-width characters into
+// notification text. They break equals(), trim() and regex anchors, so strip
+// them (and turn non-breaking spaces into normal ones) before any matching.
+private val INVISIBLE_CHARS = Regex("[\\u200B-\\u200F\\u202A-\\u202E\\u2060-\\u2064\\uFEFF]")
+
+private fun clean(input: String): String {
+    return input
+        .replace(INVISIBLE_CHARS, "")
+        .replace('\u00A0', ' ')
+        .replace(Regex("\\s+"), " ")
+        .trim()
+}
 
 // WhatsApp chat notifications use the messaging category / MessagingStyle.
 private fun isChatNotification(notification: Notification): Boolean {
@@ -68,25 +89,36 @@ class MyNotificationListenerService : NotificationListenerService() {
         val extras = notification.extras ?: return
         val isWhatsApp = WHATSAPP_PACKAGES.contains(sbn.packageName)
 
-        // Only the title is read before the chat check, so chat text is never
-        // touched. WhatsApp payment notifications use the title "Payment".
-        val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: ""
-        val titleIsPayment = isWhatsApp && title.trim().equals("Payment", ignoreCase = true)
+        val title = clean(extras.getCharSequence(Notification.EXTRA_TITLE)?.toString() ?: "")
+        val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+        val text = clean(
+            bigText
+                ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
+                ?: ""
+        )
 
-        if (isWhatsApp && !titleIsPayment && isChatNotification(notification)) {
-            Log.d(TAG, "WhatsApp notification dropped: chat-style (category=${notification.category})")
+        // WhatsApp payment notifications use the title "Payment" (matched
+        // loosely now), or carry the strict "<name> sent ₹X to You" text.
+        val titleIsPayment = isWhatsApp &&
+            title.length <= 40 &&
+            title.contains("payment", ignoreCase = true)
+        val textIsCreditForm = isWhatsApp && WHATSAPP_CREDIT_FORM.containsMatchIn(text)
+        val paymentByContent = titleIsPayment || textIsCreditForm
+
+        if (isWhatsApp && !paymentByContent && isChatNotification(notification)) {
+            // Only lengths are logged, never the chat's title or text.
+            Log.d(
+                TAG,
+                "WhatsApp notification dropped: chat-style (category=${notification.category}, " +
+                    "titleLen=${title.length}, textLen=${text.length})"
+            )
             return
         }
 
-        val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
-        val text = bigText
-            ?: extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()
-            ?: ""
-
         if (title.isBlank() && text.isBlank()) return
 
-        // WhatsApp: outside the "Payment" title, keep only what reads like a payment.
-        if (isWhatsApp && !titleIsPayment) {
+        // WhatsApp: outside the payment cases, keep only what reads like a payment.
+        if (isWhatsApp && !paymentByContent) {
             val looksLikePayment = WHATSAPP_PAYMENT_PHRASE.containsMatchIn("$title $text") ||
                 WHATSAPP_AMOUNT_MOVE.containsMatchIn(text)
             if (!looksLikePayment) {
@@ -97,6 +129,10 @@ class MyNotificationListenerService : NotificationListenerService() {
 
         // No amount mentioned -> not a payment notification.
         if (!AMOUNT_PATTERN.containsMatchIn("$title $text")) return
+
+        if (isWhatsApp) {
+            Log.d(TAG, "WhatsApp payment captured (titleIsPayment=$titleIsPayment, creditForm=$textIsCreditForm)")
+        }
 
         NotificationQueue.add(
             applicationContext,
