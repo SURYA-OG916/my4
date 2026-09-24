@@ -18,6 +18,10 @@ import 'transfer_helper.dart';
 //  - Day 28: apps in approvalRequiredPackages (Slice) are NEVER auto-inserted;
 //    every successful parse waits in "needs review" until the user taps Add.
 //    Only earlier entries from the same app are offered as "similar".
+//  - Day 32: two payments from DIFFERENT payment apps with DIFFERENT names
+//    (for example a GPay credit from Harish and a WhatsApp Pay credit from
+//    Yogarathinam) are no longer treated as duplicates of each other just
+//    because the amount and date match. See _dropClearlyDifferent below.
 //  - failed parse (no amount, failed/pending/promotional) -> ignored, and NOT
 //    marked processed, so an improved parser can pick it up on a later run
 //  - payments to/from one of the user's own names -> category "Transfer"
@@ -143,6 +147,60 @@ class NotificationIngestor {
 
   static String _dismissedKey(String hash) => 'dismissed_notif_$hash';
 
+  // Day 32: the apps that count as "payment apps" for the different-app +
+  // different-name rule. Samsung Wallet and Slice are deliberately NOT here:
+  // they report on the bank account itself (like a bank SMS), so the same
+  // money can show up there AND in a payment app under different-looking
+  // names. Those keep the plain amount + type + date check.
+  // Keep the labels in sync with upiAppLabels in notification_parser.dart.
+  static const Set<String> _paymentAppLabels = {
+    'Google Pay',
+    'PhonePe',
+    'Paytm',
+    'BHIM',
+    'CRED',
+    'WhatsApp Pay',
+  };
+
+  /// The app part of a stored source, e.g. "Google Pay • SBI 3835" ->
+  /// "Google Pay". A bank SMS source such as "SBI" is returned as-is and is
+  /// not in [_paymentAppLabels], so it is never treated as a payment app.
+  static String _appOfSource(String source) {
+    return source.split(' • ').first.trim();
+  }
+
+  /// True only when both names are known and clearly different. Compared
+  /// ignoring case; two names count as the same if one contains the other
+  /// ("Harish" and "HARISH SURYA M"). If either name is missing we cannot
+  /// tell, so this returns false and the duplicate warning stays.
+  static bool _namesDiffer(String? a, String? b) {
+    if (a == null || b == null) return false;
+    final x = a.trim().toLowerCase();
+    final y = b.trim().toLowerCase();
+    if (x.isEmpty || y.isEmpty) return false;
+    return !(x.contains(y) || y.contains(x));
+  }
+
+  /// Day 32: removes "duplicates" that are clearly two different payments:
+  /// the new notification and the existing transaction both came from
+  /// payment apps, the apps differ, and the names differ. Everything else is
+  /// kept, so bank SMS, Samsung Wallet, Slice and manual entries behave
+  /// exactly as before.
+  static List<Transaction> _dropClearlyDifferent(
+    List<Transaction> duplicates,
+    NotificationParseResult parsed,
+  ) {
+    if (!_paymentAppLabels.contains(parsed.appLabel)) return duplicates;
+
+    return duplicates.where((t) {
+      final otherApp = _appOfSource(t.source);
+      if (!_paymentAppLabels.contains(otherApp)) return true; // keep
+      if (otherApp == parsed.appLabel) return true; // same app: keep
+      if (!_namesDiffer(t.title, parsed.merchant)) return true; // keep
+      return false; // different app AND different name: not a duplicate
+    }).toList();
+  }
+
   /// Reads the native queue and ingests anything new. Safe to call from
   /// several places at once: concurrent callers share one run.
   static Future<NotificationIngestResult> run() {
@@ -207,10 +265,13 @@ class NotificationIngestor {
 
       final draft = _buildTransaction(n, parsed, ownNames);
 
-      final duplicates = await DatabaseHelper.instance.findPotentialDuplicates(
-        amount: draft.amount,
-        type: draft.type,
-        date: draft.date,
+      final duplicates = _dropClearlyDifferent(
+        await DatabaseHelper.instance.findPotentialDuplicates(
+          amount: draft.amount,
+          type: draft.type,
+          date: draft.date,
+        ),
+        parsed,
       );
 
       // Day 28: Slice always waits for the user's permission. Only earlier
@@ -324,6 +385,16 @@ class NotificationIngestor {
     final hash = entry.notification.hash;
     await DatabaseHelper.instance.markSmsProcessed(hash);
     await DatabaseHelper.instance.setSetting(_dismissedKey(hash), '1');
+  }
+
+  /// Day 29: reverses [dismissReviewItem] — un-marks the notification as
+  /// processed and clears its dismissed flag, so it reappears in "Needs
+  /// review" on the next refresh instead of staying hidden. Used by the
+  /// Notification Reader screen's "Undo" snackbar action.
+  static Future<void> undismissReviewItem(NotificationEntry entry) async {
+    final hash = entry.notification.hash;
+    await DatabaseHelper.instance.deleteSetting(_dismissedKey(hash));
+    await DatabaseHelper.instance.unmarkSmsProcessed(hash);
   }
 
   // --- Info for the Accounts screen ---

@@ -59,6 +59,9 @@ BankInfo bankInfoFor(String bankName) {
 /// Round badge for a bank. If you add your own logo at
 /// assets/banks/<key>.png (e.g. assets/banks/sbi.png) it is used
 /// automatically; otherwise a coloured monogram is shown.
+///
+/// Day 32: logos are shown in full (BoxFit.contain) on a white circle with a
+/// little padding, so wide or non-square logos are no longer cropped.
 class BankBadge extends StatelessWidget {
   final String bankName;
   final double size;
@@ -76,7 +79,16 @@ class BankBadge extends StatelessWidget {
         height: size,
         child: Image.asset(
           'assets/banks/${info.key}.png',
-          fit: BoxFit.cover,
+          fit: BoxFit.contain,
+          // Only wraps the logo when the PNG loads; if the file is missing,
+          // errorBuilder's monogram is used directly (no white padding).
+          frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+            return Container(
+              color: Colors.white,
+              padding: EdgeInsets.all(size * 0.12),
+              child: child,
+            );
+          },
           errorBuilder: (_, __, ___) => monogram,
         ),
       ),

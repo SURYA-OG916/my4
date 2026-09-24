@@ -5,6 +5,9 @@
 //         user before they are added (see approvalRequiredPackages), and the
 //         "Avl. Bal." figure is read separately so it is never mistaken for
 //         the payment amount.
+// Day 32: PhonePe ("Money received" / "X has sent ₹1 to your bank account
+//         State Bank of India-3835"): the sender name is now read, and the
+//         words "bank account" are no longer part of the bank name.
 //
 // Self-contained on purpose: it depends on no MY4 models, so it can be tuned
 // against real notification wording without touching the rest of the app.
@@ -126,6 +129,13 @@ class NotificationParser {
     caseSensitive: false,
   );
 
+  // Day 32, PhonePe: "Vinith Veeramuthu has sent ₹1 to your bank account
+  // State Bank of India-3835" -> Vinith Veeramuthu
+  static final RegExp _leadingSenderToYour = RegExp(
+    r"^(?:you\s+)?(.+?)\s+(?:has\s+)?(?:sent|paid)\s+(?:₹|rs\.?|inr)\s*[0-9][0-9,]*(?:\.[0-9]{1,2})?\s+to\s+your\b",
+    caseSensitive: false,
+  );
+
   // Samsung Wallet: "sharaj7106@pingpay has sent money on your ... account."
   static final RegExp _vpaSentMoney = RegExp(
     r"([A-Za-z0-9._-]+@[A-Za-z0-9.-]+)\s+has\s+sent\s+money",
@@ -158,6 +168,8 @@ class NotificationParser {
   );
 
   // "Deposited in your State Bank Of India - 3835 on 19 September ..."
+  // Day 32: also matches PhonePe's "... to your bank account State Bank of
+  // India-3835"; the leading "bank account" is stripped afterwards.
   static final RegExp _accountWithBank = RegExp(
     r"\byour\s+([A-Za-z][A-Za-z .&]*?)\s*[-–:]\s*(?:xx+|\*+)?(\d{4})\b",
     caseSensitive: false,
@@ -175,8 +187,16 @@ class NotificationParser {
     caseSensitive: false,
   );
 
+  // Day 32: "bank account" on its own is also a generic word, not a bank name.
   static final RegExp _genericBankWord = RegExp(
-    r"^(?:a/c|ac|acct|account|bank)$",
+    r"^(?:bank\s+)?(?:a/c|ac|acct|account|bank)$",
+    caseSensitive: false,
+  );
+
+  // Day 32: leading "bank account " / "account " / "a/c " in front of a bank
+  // name ("bank account State Bank of India" -> "State Bank of India").
+  static final RegExp _leadingAccountWords = RegExp(
+    r"^(?:bank\s+)?(?:account|a/c|acct?)\s+",
     caseSensitive: false,
   );
 
@@ -283,7 +303,11 @@ class NotificationParser {
 
     if (merchant == null && direction == NotificationDirection.credit) {
       for (final source in [cleanTitle, cleanText]) {
-        for (final pattern in [_leadingSender, _leadingSenderAmount]) {
+        for (final pattern in [
+          _leadingSender,
+          _leadingSenderAmount,
+          _leadingSenderToYour,
+        ]) {
           final m = pattern.firstMatch(source);
           if (m != null) {
             merchant = _cleanMerchant(m.group(1)!);
@@ -314,9 +338,9 @@ class NotificationParser {
     String? accountLast4;
     final withBank = _accountWithBank.firstMatch(combined);
     if (withBank != null) {
-      final rawBank = withBank.group(1)!.trim();
+      final rawBank = _stripAccountWords(withBank.group(1)!.trim());
       accountLast4 = withBank.group(2);
-      if (!_genericBankWord.hasMatch(rawBank)) {
+      if (rawBank.isNotEmpty && !_genericBankWord.hasMatch(rawBank)) {
         bankName = _shortBankName(rawBank);
       }
     } else {
@@ -354,6 +378,10 @@ class NotificationParser {
 
   static String _collapse(String input) {
     return input.replaceAll(RegExp(r'\s+'), ' ').trim();
+  }
+
+  static String _stripAccountWords(String raw) {
+    return raw.replaceFirst(_leadingAccountWords, '').trim();
   }
 
   static String? _cleanMerchant(String raw) {

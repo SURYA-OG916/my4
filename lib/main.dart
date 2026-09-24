@@ -275,31 +275,40 @@ class _TransactionListScreenState extends State<TransactionListScreen>
     return '${monthNames[month.month - 1]} ${month.year}';
   }
 
-  Future<bool> _confirmDelete(Transaction txn) async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete transaction?'),
-        content: Text('Delete "${txn.title}"? This cannot be undone.'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(false),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('Delete', style: TextStyle(color: Colors.red)),
-          ),
-        ],
-      ),
-    );
-    return confirmed ?? false;
-  }
-
+  // Day 32: delete now shows an UNDO Snackbar instead of asking for
+  // confirmation first. The full Transaction object is kept in memory, so
+  // UNDO re-inserts it with its original id, date, category and source.
   Future<void> _deleteTransaction(Transaction txn) async {
+    // Capture the messenger before any await so it stays valid.
+    final messenger = ScaffoldMessenger.of(context);
+
     await DatabaseHelper.instance.deleteTransaction(txn.id);
+    if (!mounted) return;
     setState(() {
       transactions.removeWhere((t) => t.id == txn.id);
+    });
+
+    messenger.hideCurrentSnackBar();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text('Deleted "${txn.title}"'),
+        duration: const Duration(seconds: 5),
+        action: SnackBarAction(
+          label: 'UNDO',
+          onPressed: () => _undoDelete(txn),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _undoDelete(Transaction txn) async {
+    // Guard against a double tap re-inserting the same id twice.
+    if (transactions.any((t) => t.id == txn.id)) return;
+
+    await DatabaseHelper.instance.insertTransaction(txn);
+    if (!mounted) return;
+    setState(() {
+      transactions.add(txn);
     });
   }
 
@@ -343,10 +352,7 @@ class _TransactionListScreenState extends State<TransactionListScreen>
                 title: const Text('Delete', style: TextStyle(color: Colors.red)),
                 onTap: () async {
                   Navigator.pop(ctx); // close the sheet first
-                  final confirmed = await _confirmDelete(txn);
-                  if (confirmed) {
-                    await _deleteTransaction(txn);
-                  }
+                  await _deleteTransaction(txn);
                 },
               ),
               ListTile(
