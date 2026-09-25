@@ -102,6 +102,24 @@ class SmsParser {
     caseSensitive: false,
   );
 
+  // Day 33: payment REMINDERS are not transactions. Example (Airtel):
+  //   "Hi, a payment of Rs 1179 is due on 13-SEP-26 for your Airtel Mobile
+  //    ... Please ignore if already paid."
+  // The words "already paid" used to count as a debit keyword, so every
+  // reminder was saved as a payment that never happened.
+  static final RegExp _reminderPattern = RegExp(
+    r'\b(?:is|are|was)\s+due\b|\bdue\s+(?:on|by|date)\b|\bignore\s+if\s+(?:you\s+have\s+)?(?:already\s+)?paid\b|\boverdue\b|\bpayment\s+reminder\b|\b(?:minimum|total)\s+(?:amount\s+)?due\b',
+    caseSensitive: false,
+  );
+
+  // Day 33: wording that only appears when money really moved. A message
+  // containing one of these is never treated as a reminder, even if it also
+  // mentions a due date.
+  static final RegExp _movedMoneyPattern = RegExp(
+    r'\b(?:debited|credited|withdrawn|spent\s+on|sent\s+from|received\s+in|transferred)\b|\bpaid\s+(?:to\b|rs\.?|inr\b|₹)',
+    caseSensitive: false,
+  );
+
   // Merchant: text after "to", "at", "towards", or a VPA-looking token
   // (name@bank). Tries the SBI "trf to/from NAME Refno" form first, then
   // VPA (most reliable generic signal), then keyword-prefixed text.
@@ -114,6 +132,15 @@ class SmsParser {
   );
   static final RegExp _merchantAfterKeyword = RegExp(
     r'\b(?:to|at|towards)\s+([A-Za-z0-9@.\-_ ]{2,40}?)(?:\s+(?:on|for|dt|ref|refno|txn|a\/c)\b|[.,]|$)',
+    caseSensitive: false,
+  );
+
+  // Day 33: SBI-style description after a numeric date and a dash, e.g.
+  //   "Debited INR 47.20 on 14/09/26 -CDM CHARGE DR. Avl Bal INR 3,012.04.-SBI"
+  // group 1 = the description ("CDM CHARGE DR"). Used only as a last resort,
+  // after every other merchant rule has failed to find a name.
+  static final RegExp _dateDashDescriptionPattern = RegExp(
+    r'\bon\s+\d{1,2}[/\-]\d{1,2}[/\-]\d{2,4}\s*-\s*([A-Za-z0-9 &/_.]{2,40}?)\s*(?:\.\s|\.$|\bavl\b|$)',
     caseSensitive: false,
   );
 
@@ -178,6 +205,20 @@ class SmsParser {
       final sliceResult =
           _parseSliceSms(sender: sender, body: body, smsDate: smsDate);
       if (sliceResult != null) return sliceResult;
+    }
+
+    // Day 33: a payment reminder ("... is due on 13-SEP-26 ... Please ignore
+    // if already paid") is not a transaction. Only messages with no
+    // money-moved wording are treated this way.
+    if (_reminderPattern.hasMatch(body) &&
+        !_movedMoneyPattern.hasMatch(body)) {
+      return SmsParseResult.failure(
+        'Looks like a payment reminder, not a transaction',
+        body,
+        sender,
+        bankName: bankName,
+        smsDate: smsDate,
+      );
     }
 
     // Direction is judged with "credit card" / "debit card" wording removed.
@@ -381,6 +422,22 @@ class SmsParser {
       final String candidate = keywordMatch.group(1)!.trim();
       if (candidate.isNotEmpty) {
         return candidate;
+      }
+    }
+
+    // Day 33: last resort. SBI fee / charge messages carry only a short
+    // description after the date, e.g. "on 14/09/26 -CDM CHARGE DR.".
+    // A trailing DR / CR marker is dropped from the title.
+    final descMatch = _dateDashDescriptionPattern.firstMatch(body);
+    if (descMatch != null) {
+      var candidate = _cleanName(descMatch.group(1));
+      if (candidate != null) {
+        candidate = candidate
+            .replaceAll(RegExp(r'\s+(?:dr|cr)$', caseSensitive: false), '')
+            .trim();
+        if (candidate.isNotEmpty) {
+          return candidate;
+        }
       }
     }
 

@@ -13,11 +13,25 @@ class SummaryHeader extends StatelessWidget {
   /// "Balance" for the current month, "Closing" for a past month.
   final String balanceLabel;
 
+  /// Day 33: tapping Income / Spent switches the main screen's
+  /// All / Received / Sent selector. When a callback is null the column is
+  /// not tappable.
+  final VoidCallback? onIncomeTap;
+  final VoidCallback? onSpentTap;
+
+  /// Day 33: which of the two is currently the active filter (tinted).
+  final bool incomeSelected;
+  final bool spentSelected;
+
   const SummaryHeader({
     super.key,
     required this.transactions,
     this.bankBalance,
     this.balanceLabel = 'Balance',
+    this.onIncomeTap,
+    this.onSpentTap,
+    this.incomeSelected = false,
+    this.spentSelected = false,
   });
 
   @override
@@ -55,8 +69,20 @@ class SummaryHeader extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildColumn('Income', totalCredit, Colors.green),
-          _buildColumn('Spent', totalDebit, Colors.red),
+          _buildColumn(
+            'Income',
+            totalCredit,
+            Colors.green,
+            onTap: onIncomeTap,
+            selected: incomeSelected,
+          ),
+          _buildColumn(
+            'Spent',
+            totalDebit,
+            Colors.red,
+            onTap: onSpentTap,
+            selected: spentSelected,
+          ),
           if (balance != null)
             _buildLockedBalanceColumn(
                 balanceLabel, balance, balance >= 0 ? Colors.green : Colors.red)
@@ -67,8 +93,14 @@ class SummaryHeader extends StatelessWidget {
     );
   }
 
-  Widget _buildColumn(String label, double value, Color color) {
-    return Column(
+  Widget _buildColumn(
+    String label,
+    double value,
+    Color color, {
+    VoidCallback? onTap,
+    bool selected = false,
+  }) {
+    final content = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13)),
@@ -79,6 +111,22 @@ class SummaryHeader extends StatelessWidget {
               color: color, fontWeight: FontWeight.bold, fontSize: 16),
         ),
       ],
+    );
+
+    // Not a filter shortcut (for example "Net"): plain, as before.
+    if (onTap == null) return content;
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        decoration: BoxDecoration(
+          color: selected ? color.withValues(alpha: 0.10) : Colors.transparent,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: content,
+      ),
     );
   }
 

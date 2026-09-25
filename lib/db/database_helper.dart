@@ -138,6 +138,20 @@ class DatabaseHelper {
     );
   }
 
+  /// Day 29 cleanup: deletes several transactions by id in one batch, for
+  /// the "Clean up old imports" flow on the Accounts screen. Returns how
+  /// many rows were actually removed.
+  Future<int> deleteTransactionsByIds(List<String> ids) async {
+    if (ids.isEmpty) return 0;
+    final db = await instance.database;
+    final placeholders = List.filled(ids.length, '?').join(', ');
+    return await db.delete(
+      'transactions',
+      where: 'id IN ($placeholders)',
+      whereArgs: ids,
+    );
+  }
+
   Future<List<model.Transaction>> getAllTransactions() async {
     final db = await instance.database;
     final result = await db.query('transactions', orderBy: 'date DESC');

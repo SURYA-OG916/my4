@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/transaction.dart';
 import '../db/database_helper.dart';
+import '../utils/transfer_helper.dart';
 import 'budget_settings_screen.dart';
 
 class CategorySummaryScreen extends StatefulWidget {
@@ -40,6 +41,10 @@ class _CategorySummaryScreenState extends State<CategorySummaryScreen> {
 
     for (final tx in widget.transactions) {
       if (tx.type != TransactionType.debit) continue;
+      // Day 30: Transfers (own-name-matched payments) aren't real spend,
+      // so they're excluded from category totals here the same way
+      // recurring_detector.dart already excludes them (Day 29).
+      if (tx.category == transferCategory) continue;
       totals.update(
         tx.category,
         (value) => value + tx.amount,
@@ -53,7 +58,10 @@ class _CategorySummaryScreenState extends State<CategorySummaryScreen> {
   Future<void> _openBudgetSettings() async {
     final categories = [
       'All',
-      ...{for (var t in widget.transactions) t.category}
+      ...{
+        for (var t in widget.transactions)
+          if (t.category != transferCategory) t.category
+      }
     ];
 
     await Navigator.push(

@@ -1,4 +1,6 @@
 import '../models/transaction.dart';
+import '../utils/sms_filter.dart';
+import '../utils/transfer_helper.dart';
 
 class RecurringGroup {
   final String title;
@@ -34,13 +36,30 @@ class RecurringGroup {
 /// by grouping debit transactions with the same normalized title and
 /// checking they occur in at least [minMonths] distinct months with
 /// amounts close enough to each other (within [amountTolerance] fraction).
+///
+/// Day 29 fix: two bugs let obvious non-subscriptions through.
+///   1. Promo/OTP/reminder SMS titles (e.g. "avoid service disconnection")
+///      were never excluded, so a leftover promo import that happened to
+///      recur got flagged as a subscription. Now checked with the same
+///      SmsFilter.looksLikePromo pattern the cleanup card uses, so the two
+///      can never disagree on what counts as promo text.
+///   2. Own-account Transfer-tagged transactions (e.g. one-off large
+///      transfers to a person that happened to land 2 months apart) were
+///      never excluded, and minMonths defaulted to 2, which is loose enough
+///      for coincidence. Transfers are now excluded outright and the
+///      default is raised to 3 distinct months before something counts as
+///      recurring.
 List<RecurringGroup> detectRecurring(
   List<Transaction> transactions, {
-  int minMonths = 2,
+  int minMonths = 3,
   double amountTolerance = 0.15,
 }) {
   final debitTxns = transactions.where(
-    (t) => t.type == TransactionType.debit,
+    (t) =>
+        t.type == TransactionType.debit &&
+        !isTransfer(t) &&
+        !SmsFilter.looksLikePromo(t.title) &&
+        !SmsFilter.looksLikePromo(t.source),
   );
 
   final Map<String, List<Transaction>> grouped = {};

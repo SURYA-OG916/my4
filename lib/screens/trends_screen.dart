@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../db/database_helper.dart';
 import '../models/transaction.dart' as model;
 import '../utils/date_range_helper.dart';
+import '../utils/transfer_helper.dart';
 
 class MonthlySpend {
   final DateTime month;
@@ -45,6 +46,9 @@ class _TrendsScreenState extends State<TrendsScreen> {
 
       double total = 0;
       for (final t in transactions) {
+        // Day 30: Transfers aren't real spend, excluded the same way
+        // Category Summary and Recurring detection already do.
+        if (t.category == transferCategory) continue;
         if (t.type == model.TransactionType.debit &&
             !t.date.isBefore(start) &&
             !t.date.isAfter(end)) {

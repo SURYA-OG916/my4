@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/transaction.dart';
+import '../utils/category_matcher.dart';
 
 class AddTransactionScreen extends StatefulWidget {
   final List<String> existingCategories;
@@ -40,6 +41,14 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
   bool get _isEditing =>
       widget.existingTransaction != null && !widget.isDraft;
 
+  // Day 29: auto-suggests a category from the title as you type, using the
+  // same CategoryMatcher the notification/SMS pipeline already uses. Only
+  // active for a genuinely new transaction (not an edit or an SMS draft,
+  // both of which may already carry a deliberate category), and it stops
+  // the moment the user picks a category themselves, so it never overwrites
+  // a manual choice.
+  bool _categoryTouchedByUser = false;
+
   @override
   void initState() {
     super.initState();
@@ -69,13 +78,38 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
         _selectedCategory = _otherOptionValue;
         _customCategoryController.text = existing.category;
       }
+      // Editing or a draft already has a category worth keeping — don't
+      // let title edits silently reassign it.
+      _categoryTouchedByUser = true;
     } else if (realCategories.isNotEmpty) {
       _selectedCategory = realCategories.first;
+    }
+
+    _titleController.addListener(_onTitleChanged);
+  }
+
+  void _onTitleChanged() {
+    if (widget.existingTransaction != null) return; // edit/draft: skip
+    if (_categoryTouchedByUser) return;
+
+    final title = _titleController.text.trim();
+    if (title.isEmpty) return;
+
+    final guess = CategoryMatcher.categorize(title);
+    final realCategories =
+        widget.existingCategories.where((c) => c != 'All').toList();
+
+    // Only apply the guess if it's an actual category already in use in
+    // this app (so a brand-new user with an empty category list still just
+    // sees the plain default, not a category that doesn't exist for them).
+    if (realCategories.contains(guess) && _selectedCategory != guess) {
+      setState(() => _selectedCategory = guess);
     }
   }
 
   @override
   void dispose() {
+    _titleController.removeListener(_onTitleChanged);
     _titleController.dispose();
     _sourceController.dispose();
     _amountController.dispose();
@@ -220,6 +254,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                 onChanged: (value) {
                   setState(() {
                     _selectedCategory = value;
+                    _categoryTouchedByUser = true;
                   });
                 },
                 validator: (value) =>

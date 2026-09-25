@@ -20,7 +20,7 @@ class RecurringScreen extends StatelessWidget {
                 child: Text(
                   'No recurring transactions detected yet.\n'
                   'A transaction needs to repeat with a similar amount '
-                  'across at least 2 months to show up here.',
+                  'across at least 3 months to show up here.',
                   textAlign: TextAlign.center,
                 ),
               ),

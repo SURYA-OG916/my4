@@ -7,6 +7,7 @@ import '../models/transaction.dart';
 import 'category_matcher.dart';
 import 'needs_review_store.dart';
 import 'notification_parser.dart';
+import 'recategorizer.dart';
 import 'slice_balance.dart';
 import 'transfer_helper.dart';
 
@@ -22,6 +23,17 @@ import 'transfer_helper.dart';
 //    (for example a GPay credit from Harish and a WhatsApp Pay credit from
 //    Yogarathinam) are no longer treated as duplicates of each other just
 //    because the amount and date match. See _dropClearlyDifferent below.
+//  - Day 33: the same rule now also applies within ONE payment app. Two
+//    WhatsApp Pay credits of the same amount from different people
+//    (Anandh Anna vs MsYogarathinamK) are different payments, not duplicates.
+//    One app never reports the same payment under two different names.
+//  - Day 33: a credit with a real sender name, received through a payment
+//    app, Slice or Samsung Wallet, whose name matched no category keyword is
+//    filed under "Personal" instead of "Other". Debits are left as "Other"
+//    (an unknown debit could be a shop).
+//  - Day 33: at the start of every run, Recategorizer.runOnce() performs a
+//    one-time cleanup of old "Other" transactions (a no-op after the first
+//    successful run).
 //  - failed parse (no amount, failed/pending/promotional) -> ignored, and NOT
 //    marked processed, so an improved parser can pick it up on a later run
 //  - payments to/from one of the user's own names -> category "Transfer"
@@ -147,8 +159,8 @@ class NotificationIngestor {
 
   static String _dismissedKey(String hash) => 'dismissed_notif_$hash';
 
-  // Day 32: the apps that count as "payment apps" for the different-app +
-  // different-name rule. Samsung Wallet and Slice are deliberately NOT here:
+  // Day 32: the apps that count as "payment apps" for the different-name
+  // duplicate rule. Samsung Wallet and Slice are deliberately NOT here:
   // they report on the bank account itself (like a bank SMS), so the same
   // money can show up there AND in a payment app under different-looking
   // names. Those keep the plain amount + type + date check.
@@ -160,6 +172,21 @@ class NotificationIngestor {
     'BHIM',
     'CRED',
     'WhatsApp Pay',
+  };
+
+  // Day 33: apps where a credit with a real sender name is a payment from a
+  // person, for the "Personal" category. This is the payment apps plus Slice
+  // and Samsung Wallet (the duplicate rule above does not apply to category).
+  // Keep in sync with _personalCreditAppLabels in recategorizer.dart.
+  static const Set<String> _personalCreditAppLabels = {
+    'Google Pay',
+    'PhonePe',
+    'Paytm',
+    'BHIM',
+    'CRED',
+    'WhatsApp Pay',
+    'Slice',
+    'Samsung Wallet',
   };
 
   /// The app part of a stored source, e.g. "Google Pay • SBI 3835" ->
@@ -181,11 +208,12 @@ class NotificationIngestor {
     return !(x.contains(y) || y.contains(x));
   }
 
-  /// Day 32: removes "duplicates" that are clearly two different payments:
-  /// the new notification and the existing transaction both came from
-  /// payment apps, the apps differ, and the names differ. Everything else is
-  /// kept, so bank SMS, Samsung Wallet, Slice and manual entries behave
-  /// exactly as before.
+  /// Day 32 + Day 33: removes "duplicates" that are clearly two different
+  /// payments. The new notification and the existing transaction both came
+  /// from payment apps (the same app or different apps) and both have a real
+  /// sender/receiver name, and the names differ. Everything else is kept, so
+  /// bank SMS, Samsung Wallet, Slice and manual entries behave exactly as
+  /// before.
   static List<Transaction> _dropClearlyDifferent(
     List<Transaction> duplicates,
     NotificationParseResult parsed,
@@ -194,10 +222,20 @@ class NotificationIngestor {
 
     return duplicates.where((t) {
       final otherApp = _appOfSource(t.source);
-      if (!_paymentAppLabels.contains(otherApp)) return true; // keep
-      if (otherApp == parsed.appLabel) return true; // same app: keep
-      if (!_namesDiffer(t.title, parsed.merchant)) return true; // keep
-      return false; // different app AND different name: not a duplicate
+
+      // Existing entry is not from a payment app (bank SMS, Samsung Wallet,
+      // Slice, manual add): keep the normal duplicate warning.
+      if (!_paymentAppLabels.contains(otherApp)) return true;
+
+      // Existing entry has no real name (its title is just the app label),
+      // so we cannot tell the people apart: keep the warning.
+      if (t.title.trim().toLowerCase() == otherApp.toLowerCase()) return true;
+
+      // Both names known and different -> different payments, not a
+      // duplicate. Applies to the same app and to different apps.
+      if (_namesDiffer(t.title, parsed.merchant)) return false;
+
+      return true; // names match or are unknown: keep
     }).toList();
   }
 
@@ -226,6 +264,13 @@ class NotificationIngestor {
   static Future<NotificationIngestResult> _run() async {
     final enabled =
         await _channel.invokeMethod<bool>('isListenerEnabled') ?? false;
+
+    // Day 33: one-time cleanup of old "Other" transactions. Does nothing
+    // after its first successful run. A failure here must never break
+    // notification ingestion, and leaves the pass to retry next time.
+    try {
+      await Recategorizer.runOnce();
+    } catch (_) {}
 
     // Oldest first, so earlier notifications are inserted before later ones
     // are checked for duplicates.
@@ -350,9 +395,23 @@ class NotificationIngestor {
 
     // Money to/from one of the user's own names is a transfer between their
     // own accounts, not income or spending.
-    final category = (merchant != null && matchesOwnName(merchant, ownNames))
-        ? transferCategory
-        : CategoryMatcher.categorize(merchant ?? '', bankName: parsed.bankName);
+    String category;
+    if (merchant != null && matchesOwnName(merchant, ownNames)) {
+      category = transferCategory;
+    } else {
+      category =
+          CategoryMatcher.categorize(merchant ?? '', bankName: parsed.bankName);
+
+      // Day 33: a credit from a named sender through a payment app, Slice or
+      // Samsung Wallet, with no keyword match, is a personal payment rather
+      // than "Other".
+      if (category == CategoryMatcher.defaultCategory &&
+          merchant != null &&
+          type == TransactionType.credit &&
+          _personalCreditAppLabels.contains(parsed.appLabel)) {
+        category = CategoryMatcher.personalCategory;
+      }
+    }
 
     return Transaction(
       id: 'notif_${n.postTime}_${n.hash.substring(0, 8)}',

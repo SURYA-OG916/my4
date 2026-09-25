@@ -89,7 +89,32 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
     }
   }
 
+  // Day 29: "Clear captured" wipes the native notification queue and cannot
+  // be undone from Dart (the notifications are gone from the native side,
+  // not just hidden), so this confirms first instead of offering a fake undo.
   Future<void> _clear() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Clear captured notifications?'),
+        content: const Text(
+          'This removes them from the queue entirely and cannot be undone. '
+          'Transactions already added are not affected.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Clear', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
     try {
       await NotificationIngestor.clearCaptured();
     } catch (e) {
@@ -116,9 +141,33 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
     await _refresh();
   }
 
+  // Day 29: dismissing now offers an Undo action in the snackbar. Undo calls
+  // NotificationIngestor.undismissReviewItem, which reverses the exact two
+  // writes _dismiss made, then refreshes so the item reappears.
   Future<void> _dismiss(NotificationEntry entry) async {
     try {
       await NotificationIngestor.dismissReviewItem(entry);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = e.toString());
+      return;
+    }
+    await _refresh();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Text('Dismissed'),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () => _undismiss(entry),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _undismiss(NotificationEntry entry) async {
+    try {
+      await NotificationIngestor.undismissReviewItem(entry);
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = e.toString());
@@ -140,7 +189,7 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
         ),
         subtitle: Text(
           _enabled
-              ? 'Listening to Google Pay, PhonePe, Paytm, BHIM, CRED, '
+              ? 'Listening to Google Pay, PhonePe, Paytm, BHIM, '
                   'Samsung Wallet, WhatsApp Pay and Slice payments only.'
               : "MY4 can't see UPI app notifications until you grant access.",
         ),
@@ -245,6 +294,11 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
         break;
     }
 
+    // Day 29: a "Dismissed by you" item can also be undone directly from the
+    // list (not just via the snackbar right after dismissing), by tapping
+    // the small undo icon.
+    final canUndo = entry.status == NotificationStatus.dismissed;
+
     return Card(
       child: ListTile(
         isThreeLine: true,
@@ -267,6 +321,13 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
             ),
           ],
         ),
+        trailing: canUndo
+            ? IconButton(
+                icon: const Icon(Icons.undo),
+                tooltip: 'Undo dismiss',
+                onPressed: () => _undismiss(entry),
+              )
+            : null,
       ),
     );
   }

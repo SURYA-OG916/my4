@@ -95,4 +95,15 @@ class SmsFilter {
 
     return _bankContext.hasMatch(text);
   }
+
+  /// Day 29 cleanup: true if [text] carries the same hard-block promo/OTP/
+  /// due-reminder wording that [looksLikeTransaction] rejects live SMS for.
+  /// Transactions already in the database don't keep the original SMS body,
+  /// only a title/source, so this is checked against those fields instead —
+  /// it reuses the exact same [_hardBlock] pattern so cleanup and the live
+  /// filter can never disagree on what counts as "promo-looking".
+  static bool looksLikePromo(String text) {
+    if (text.trim().isEmpty) return false;
+    return _hardBlock.hasMatch(text);
+  }
 }

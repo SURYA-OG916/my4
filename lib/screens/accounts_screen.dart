@@ -8,6 +8,7 @@ import '../utils/balance_helper.dart';
 import '../utils/notification_ingestor.dart';
 import '../utils/notification_parser.dart';
 import '../utils/slice_balance.dart';
+import '../utils/sms_filter.dart';
 import '../utils/transfer_helper.dart';
 import '../widgets/bank_balance_tile.dart';
 
@@ -807,6 +808,106 @@ class _AccountsScreenState extends State<AccountsScreen> {
     );
   }
 
+  // ----------------------------------------------------------- cleanup (D29)
+
+  /// Day 29: leftover promo/OTP/due-reminder SMS that got imported as
+  /// transactions before Day 28's sms_filter.dart fix, plus transactions
+  /// wrongly tagged as Slice-related before the same fix. Titles are the
+  /// closest thing to the original SMS text still stored, so promo text is
+  /// checked there via the same SmsFilter.looksLikePromo pattern the live
+  /// SMS reader uses. Slice mismatches reuse isSliceSource, exactly as the
+  /// rest of this screen does for account/app matching.
+  List<Transaction> get _cleanupCandidates {
+    return _transactions.where((t) {
+      final looksPromo =
+          SmsFilter.looksLikePromo(t.title) || SmsFilter.looksLikePromo(t.source);
+      final looksSliceButMistagged =
+          isSliceSource(t.source) && t.category != transferCategory && looksPromo;
+      return looksPromo || looksSliceButMistagged;
+    }).toList();
+  }
+
+  Future<void> _cleanupOldImports() async {
+    final matches = _cleanupCandidates;
+    if (matches.isEmpty) {
+      _snack('No leftover promo or Slice-mistagged transactions found.');
+      return;
+    }
+
+    final preview = matches.take(6).toList();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(
+          'Delete ${matches.length} old import'
+          '${matches.length == 1 ? '' : 's'}?',
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'These look like promo/OTP/reminder SMS that were imported '
+                'before the Day 28 filter fix, not real transactions.',
+              ),
+              const SizedBox(height: 8),
+              for (final t in preview)
+                Text(
+                  '${t.title} • ${t.type == TransactionType.credit ? '+' : '-'}'
+                  '₹${t.amount.toStringAsFixed(2)} • ${_formatDate(t.date)}',
+                ),
+              if (matches.length > preview.length)
+                Text('…and ${matches.length - preview.length} more'),
+              const SizedBox(height: 8),
+              const Text('This cannot be undone.'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    final ids = matches.map((t) => t.id).toList();
+    final deleted = await DatabaseHelper.instance.deleteTransactionsByIds(ids);
+    _snack(
+      'Deleted $deleted old import${deleted == 1 ? '' : 's'}',
+    );
+    await _load();
+  }
+
+  Widget _buildCleanupCard() {
+    final count = _cleanupCandidates.length;
+    return _section(
+      title: 'Clean up old imports',
+      subtitle: count == 0
+          ? 'No leftover promo or Slice-mistagged transactions detected.'
+          : '$count transaction${count == 1 ? '' : 's'} look like promo/OTP/'
+              'reminder SMS or Slice entries imported before the Day 28 '
+              'filter fix. Review and delete them below.',
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: FilledButton.tonalIcon(
+          onPressed: count == 0 ? null : _cleanupOldImports,
+          icon: const Icon(Icons.cleaning_services_outlined),
+          label: Text(count == 0 ? 'Nothing to clean up' : 'Review & clean up'),
+        ),
+      ),
+    );
+  }
+
   // ------------------------------------------------------------------ layout
 
   Widget _section({
@@ -864,6 +965,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                 _buildAccountsCard(),
                 _buildAppsCard(),
                 _buildNamesCard(),
+                _buildCleanupCard(),
               ],
             ),
     );

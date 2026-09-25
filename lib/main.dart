@@ -29,6 +29,10 @@ void main() {
   runApp(const MyApp());
 }
 
+// Day 33: direction filter on the main screen. Received = credits,
+// Sent = debits. It combines with the month, category chips and search.
+enum DirectionFilter { all, received, sent }
+
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
 
@@ -57,6 +61,9 @@ class _TransactionListScreenState extends State<TransactionListScreen>
   String selectedCategory = 'All';
   List<Transaction> transactions = [];
   bool _isLoading = true;
+
+  // Day 33: All / Received / Sent selector state.
+  DirectionFilter _direction = DirectionFilter.all;
 
   // Bank balance the user set on the Accounts screen (null = not set).
   BalanceSnapshot? _balanceSnapshot;
@@ -383,6 +390,91 @@ class _TransactionListScreenState extends State<TransactionListScreen>
     });
   }
 
+  // Day 33: tapping Income / Spent on the summary card. Tapping the one that
+  // is already active goes back to All.
+  void _toggleDirection(DirectionFilter target) {
+    setState(() {
+      _direction = _direction == target ? DirectionFilter.all : target;
+    });
+  }
+
+  // Day 33: the All / Received / Sent selector, shown under the summary card.
+  Widget _buildDirectionSelector() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: SizedBox(
+        width: double.infinity,
+        child: SegmentedButton<DirectionFilter>(
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(
+              value: DirectionFilter.all,
+              label: Text('All'),
+            ),
+            ButtonSegment(
+              value: DirectionFilter.received,
+              label: Text('Received'),
+            ),
+            ButtonSegment(
+              value: DirectionFilter.sent,
+              label: Text('Sent'),
+            ),
+          ],
+          selected: {_direction},
+          onSelectionChanged: (selection) {
+            setState(() {
+              _direction = selection.first;
+            });
+          },
+        ),
+      ),
+    );
+  }
+
+  // Day 33: one-line total for whatever the list is currently showing, for
+  // example "15 transactions · ₹19636.00 received · 1 transfer (₹8847.00)
+  // not counted". The count is every row in the list. The money totals leave
+  // out own-account transfers so they agree with the summary card, unless the
+  // Transfer chip itself is selected (then they are the whole point). Any
+  // transfers left out are named at the end so the numbers can be checked
+  // against the rows on screen.
+  String _filteredSummaryText(List<Transaction> list) {
+    final showTransfers = selectedCategory == transferCategory;
+    final counted = showTransfers ? list : withoutTransfers(list).toList();
+    final countedIds = counted.map((t) => t.id).toSet();
+    final excluded = list.where((t) => !countedIds.contains(t.id)).toList();
+
+    var received = 0.0;
+    var sent = 0.0;
+    for (final t in counted) {
+      if (t.type == TransactionType.credit) {
+        received += t.amount;
+      } else {
+        sent += t.amount;
+      }
+    }
+
+    final total = list.length;
+    final parts = <String>['$total transaction${total == 1 ? '' : 's'}'];
+    if (received > 0) parts.add('₹${received.toStringAsFixed(2)} received');
+    if (sent > 0) parts.add('₹${sent.toStringAsFixed(2)} sent');
+
+    if (excluded.isNotEmpty) {
+      final n = excluded.length;
+      final label = '$n transfer${n == 1 ? '' : 's'}';
+      final hasCredit = excluded.any((t) => t.type == TransactionType.credit);
+      final hasDebit = excluded.any((t) => t.type == TransactionType.debit);
+      if (hasCredit && hasDebit) {
+        // Money in and money out mixed: one total would mislead.
+        parts.add('$label not counted');
+      } else {
+        final amount = excluded.fold(0.0, (sum, t) => sum + t.amount);
+        parts.add('$label (₹${amount.toStringAsFixed(2)}) not counted');
+      }
+    }
+    return parts.join(' · ');
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -423,10 +515,21 @@ class _TransactionListScreenState extends State<TransactionListScreen>
     // Build category list dynamically from the month-filtered data
     final categories = categoriesFrom(monthFiltered);
 
+    // Day 33: direction filter (Received = credits, Sent = debits).
+    final directionFiltered = _direction == DirectionFilter.all
+        ? monthFiltered
+        : monthFiltered.where((t) {
+            return _direction == DirectionFilter.received
+                ? t.type == TransactionType.credit
+                : t.type == TransactionType.debit;
+          }).toList();
+
     // Apply category filter
     final categoryFiltered = selectedCategory == 'All'
-        ? monthFiltered
-        : monthFiltered.where((t) => t.category == selectedCategory).toList();
+        ? directionFiltered
+        : directionFiltered
+            .where((t) => t.category == selectedCategory)
+            .toList();
 
     // Then apply search filter (title, source, category — case-insensitive)
     final query = _searchQuery.trim().toLowerCase();
@@ -437,6 +540,11 @@ class _TransactionListScreenState extends State<TransactionListScreen>
                 t.source.toLowerCase().contains(query) ||
                 t.category.toLowerCase().contains(query);
           }).toList();
+
+    // Day 33: the total line is shown only while some filter is active.
+    final isFiltered = _direction != DirectionFilter.all ||
+        selectedCategory != 'All' ||
+        query.isNotEmpty;
 
     final grouped = groupTransactionsByDate(filteredTransactions);
     final listItems = buildGroupedListItems(grouped);
@@ -532,7 +640,13 @@ class _TransactionListScreenState extends State<TransactionListScreen>
             transactions: monthFiltered,
             bankBalance: bankBalance,
             balanceLabel: balanceLabel,
+            onIncomeTap: () => _toggleDirection(DirectionFilter.received),
+            onSpentTap: () => _toggleDirection(DirectionFilter.sent),
+            incomeSelected: _direction == DirectionFilter.received,
+            spentSelected: _direction == DirectionFilter.sent,
           ),
+          const SizedBox(height: 8),
+          _buildDirectionSelector(),
           const SizedBox(height: 8),
           CategoryFilterChips(
             categories: categories,
@@ -544,13 +658,30 @@ class _TransactionListScreenState extends State<TransactionListScreen>
             },
           ),
           const SizedBox(height: 8),
+          if (isFiltered && filteredTransactions.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  _filteredSummaryText(filteredTransactions),
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.grey.shade700,
+                  ),
+                ),
+              ),
+            ),
           Expanded(
             child: listItems.isEmpty
                 ? Center(
                     child: Text(
-                      query.isEmpty
-                          ? 'No transactions in this category'
-                          : 'No transactions match "$_searchQuery"',
+                      query.isNotEmpty
+                          ? 'No transactions match "$_searchQuery"'
+                          : (_direction == DirectionFilter.all
+                              ? 'No transactions in this category'
+                              : 'No transactions for this filter'),
                     ),
                   )
                 : ListView.builder(
