@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
+import '../db/database_helper.dart';
+import '../models/bank_account.dart';
 import '../models/transaction.dart';
+import '../utils/account_balance.dart';
 import '../utils/category_matcher.dart';
+import '../utils/slice_balance.dart';
+import '../utils/transfer_helper.dart';
 
 class AddTransactionScreen extends StatefulWidget {
   final List<String> existingCategories;
@@ -37,6 +42,15 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
   static const String _otherOptionValue = '__other__';
   final TextEditingController _customCategoryController = TextEditingController();
+
+  // Day 36: which bank account this transaction went through, so manual
+  // entries and edits carry the same "Bank 1234" tag the SMS/notification
+  // pipeline adds. Optional — "None" leaves the Source field exactly as
+  // typed, for cash or anything that isn't one of your saved accounts.
+  static const String _noAccountValue = '__none__';
+  List<BankAccount> _accounts = [];
+  String? _selectedAccountId;
+  bool _accountsLoaded = false;
 
   bool get _isEditing =>
       widget.existingTransaction != null && !widget.isDraft;
@@ -86,6 +100,34 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     }
 
     _titleController.addListener(_onTitleChanged);
+    _loadAccounts();
+  }
+
+  Future<void> _loadAccounts() async {
+    final accounts = await DatabaseHelper.instance.getAllAccounts();
+    // Slice is its own account elsewhere in the app and is never picked
+    // from this list — its transactions come from Slice messages, not this
+    // form.
+    final bankAccounts =
+        accounts.where((a) => !isSliceSource(a.bank)).toList();
+
+    String? matchedId;
+    final existing = widget.existingTransaction;
+    if (existing != null) {
+      for (final a in bankAccounts) {
+        if (AccountBalance.belongsToAccount(existing, a)) {
+          matchedId = a.id;
+          break;
+        }
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _accounts = bankAccounts;
+      _selectedAccountId = matchedId;
+      _accountsLoaded = true;
+    });
   }
 
   void _onTitleChanged() {
@@ -141,10 +183,60 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     }
   }
 
+  // Day 36: there was no way to edit the TIME on an existing entry, only the
+  // date — the field kept whatever time it already had. That mattered for a
+  // manual self-transfer entered after the fact, where the real time (not
+  // "when I happened to type it in") is what makes the order of same-day
+  // transactions make sense when you look back at them.
+  Future<void> _pickTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay.fromDateTime(_selectedDate),
+    );
+    if (picked != null) {
+      setState(() {
+        _selectedDate = DateTime(
+          _selectedDate.year,
+          _selectedDate.month,
+          _selectedDate.day,
+          picked.hour,
+          picked.minute,
+        );
+      });
+    }
+  }
+
   String _formatDate(DateTime date) {
     return '${date.day.toString().padLeft(2, '0')}/'
         '${date.month.toString().padLeft(2, '0')}/'
         '${date.year}';
+  }
+
+  String _formatTime(DateTime date) {
+    return '${date.hour.toString().padLeft(2, '0')}:'
+        '${date.minute.toString().padLeft(2, '0')}';
+  }
+
+  /// Day 36: folds the chosen account into the Source text, e.g. typing
+  /// "Google Pay" as the source and picking "SBI 3742" produces
+  /// "Google Pay • SBI 3742" — the same shape SMS/notification entries use,
+  /// so AccountBalance.belongsToAccount recognizes it. If the source already
+  /// names that bank and last 4 digits (as SBI SMS already do), nothing is
+  /// added twice.
+  String _sourceWithAccount() {
+    final typed = _sourceController.text.trim();
+    if (_selectedAccountId == null || _selectedAccountId == _noAccountValue) {
+      return typed;
+    }
+    final account = _accounts.firstWhere(
+      (a) => a.id == _selectedAccountId,
+      orElse: () => _accounts.first,
+    );
+    final already = typed.toLowerCase().contains(account.bank.toLowerCase()) &&
+        typed.contains(account.last4);
+    if (already) return typed;
+    if (typed.isEmpty) return '${account.bank} ${account.last4}';
+    return '$typed • ${account.bank} ${account.last4}';
   }
 
   void _submit() {
@@ -161,7 +253,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
       id: widget.existingTransaction?.id ??
           DateTime.now().millisecondsSinceEpoch.toString(),
       title: _titleController.text.trim(),
-      source: _sourceController.text.trim(),
+      source: _sourceWithAccount(),
       amount: double.parse(_amountController.text.trim()),
       date: _selectedDate,
       type: _selectedType,
@@ -169,6 +261,38 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     );
 
     Navigator.pop(context, newTransaction);
+  }
+
+  Widget _buildAccountPicker() {
+    if (!_accountsLoaded) return const SizedBox.shrink();
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 16),
+      child: DropdownButtonFormField<String>(
+        value: _selectedAccountId ?? _noAccountValue,
+        decoration: const InputDecoration(
+          labelText: 'Account (optional)',
+          helperText: 'Which bank account this went through',
+        ),
+        items: [
+          const DropdownMenuItem(
+            value: _noAccountValue,
+            child: Text('None / not sure'),
+          ),
+          ..._accounts.map(
+            (a) => DropdownMenuItem(
+              value: a.id,
+              child: Text(a.label),
+            ),
+          ),
+        ],
+        onChanged: (value) {
+          setState(() {
+            _selectedAccountId = value;
+          });
+        },
+      ),
+    );
   }
 
   @override
@@ -216,6 +340,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   return null;
                 },
               ),
+              _buildAccountPicker(),
               const SizedBox(height: 16),
               TextFormField(
                 controller: _amountController,
@@ -314,6 +439,13 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                 subtitle: Text(_formatDate(_selectedDate)),
                 trailing: const Icon(Icons.calendar_today),
                 onTap: _pickDate,
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Time'),
+                subtitle: Text(_formatTime(_selectedDate)),
+                trailing: const Icon(Icons.access_time),
+                onTap: _pickTime,
               ),
               const SizedBox(height: 24),
               ElevatedButton(

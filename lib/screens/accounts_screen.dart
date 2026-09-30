@@ -417,6 +417,66 @@ class _AccountsScreenState extends State<AccountsScreen> {
     await _load();
   }
 
+  // Day 36: the Slice balance can now be set by hand as well. Slice still
+  // updates itself from the "Avl Bal" in Slice SMS/notifications; a value
+  // typed here is stamped "now", so it wins until a newer Slice message
+  // arrives with its own balance.
+  Future<void> _editSliceBalance() async {
+    final existing = _sliceBalance;
+    final controller = TextEditingController(
+      text: existing == null ? '' : existing.amount.toStringAsFixed(2),
+    );
+    final value = await showDialog<double>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Slice balance'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Enter what the Slice app shows right now. MY4 keeps it up to '
+              'date from Slice messages after this, but you can correct it '
+              'here any time.',
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(
+                decimal: true,
+                signed: true,
+              ),
+              decoration: const InputDecoration(
+                prefixText: '₹ ',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final parsed =
+                  double.tryParse(controller.text.replaceAll(',', '').trim());
+              if (parsed == null) return;
+              Navigator.pop(ctx, parsed);
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (value == null) return;
+    await SliceBalance.saveIfNewer(value, DateTime.now());
+    await _load();
+  }
+
   Future<void> _clearAccountBalance(BankAccount account) async {
     await AccountBalance.clear(account.id);
     await _load();
@@ -431,17 +491,26 @@ class _AccountsScreenState extends State<AccountsScreen> {
       builder: (ctx) => SafeArea(
         child: Wrap(
           children: [
-            if (isSlice)
+            if (isSlice) ...[
+              ListTile(
+                leading: const Icon(Icons.edit),
+                title: Text(
+                  _sliceBalance == null ? 'Set balance' : 'Update balance',
+                ),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _editSliceBalance();
+                },
+              ),
               const ListTile(
                 leading: Icon(Icons.info_outline),
-                title: Text('Balance updates automatically'),
+                title: Text('Also updates automatically'),
                 subtitle: Text(
-                  'It comes from the "Avl. Bal." in the Slice notifications '
-                  'you approve in the Notification Reader, and drops when you '
-                  'approve a payment you sent.',
+                  'It follows the "Avl Bal" in Slice messages, and drops when '
+                  'a payment you sent from Slice is added.',
                 ),
-              )
-            else ...[
+              ),
+            ] else ...[
               ListTile(
                 leading: const Icon(Icons.edit),
                 title: Text(hasBalance ? 'Update balance' : 'Set balance'),
@@ -486,12 +555,14 @@ class _AccountsScreenState extends State<AccountsScreen> {
       final slice = _sliceBalance;
       balance = slice?.amount;
       label += slice == null
-          ? ' • updates from Slice notifications'
+          ? ' • updates from Slice messages'
           : ' • as of ${_formatDateTime(slice.asOf)}';
     } else {
       final snap = _accountBalances[account.id];
-      balance = snap?.amount;
       if (snap != null) {
+        // Day 36: live balance = what was typed in + transactions tagged
+        // with this account since then, instead of the frozen typed value.
+        balance = AccountBalance.currentBalance(snap, account, _transactions);
         label += ' • set ${_formatDate(snap.asOf)}';
       }
     }
@@ -509,8 +580,8 @@ class _AccountsScreenState extends State<AccountsScreen> {
       title: 'Bank accounts',
       subtitle:
           'Each bank shows its own balance, hidden until you unlock it with '
-          'the eye icon. Tap a bank to set its balance. Slice updates '
-          'automatically.',
+          'the eye icon. Tap a bank to set its balance. Slice also updates '
+          'itself from Slice messages.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -627,7 +698,9 @@ class _AccountsScreenState extends State<AccountsScreen> {
       title: 'UPI apps',
       subtitle:
           'Payment apps MY4 listens to, and which of your accounts each one '
-          'uses. The Slice account is only used by the Slice app.',
+          'uses. If an app is linked to exactly one account, its payments are '
+          'tagged with that account. The Slice account is only used by the '
+          'Slice app.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -808,6 +881,145 @@ class _AccountsScreenState extends State<AccountsScreen> {
     );
   }
 
+  // ------------------------------------------------------- fill accounts (D36)
+
+  /// Day 36: label -> the single non-Slice account every package under that
+  /// label is linked to, if there is exactly one. Same grouping as
+  /// [_appGroups], reused here so a transaction whose source is just an app
+  /// label ("Paytm", "Google Pay") with no account number can be matched to
+  /// the account that app is actually linked to.
+  Map<String, BankAccount> get _singleAccountByAppLabel {
+    final result = <String, BankAccount>{};
+    for (final entry in _appGroups.entries) {
+      final ids = <String>{};
+      for (final key in entry.value) {
+        ids.addAll(_links[key] ?? const <String>{});
+      }
+      final matches = _accounts
+          .where((a) => ids.contains(a.id) && !isSliceSource(a.bank))
+          .toList();
+      if (matches.length == 1) {
+        result[entry.key.toLowerCase()] = matches.first;
+      }
+    }
+    return result;
+  }
+
+  /// Transactions whose source names no account yet (no 4-digit number) but
+  /// whose source, taken as an app label, is linked to exactly one account.
+  /// Slice entries and anything already carrying a number are left alone.
+  List<MapEntry<Transaction, BankAccount>> get _missingAccountCandidates {
+    final byLabel = _singleAccountByAppLabel;
+    if (byLabel.isEmpty) return [];
+
+    final result = <MapEntry<Transaction, BankAccount>>[];
+    for (final t in _transactions) {
+      if (isSliceSource(t.source)) continue;
+      if (RegExp(r'\d{4}').hasMatch(t.source)) continue;
+      final label = t.source.split(' • ').first.trim().toLowerCase();
+      final account = byLabel[label];
+      if (account != null) {
+        result.add(MapEntry(t, account));
+      }
+    }
+    return result;
+  }
+
+  Future<void> _fillMissingAccounts() async {
+    final matches = _missingAccountCandidates;
+    if (matches.isEmpty) {
+      _snack('Nothing to fill in — every matchable transaction already has '
+          'an account.');
+      return;
+    }
+
+    final preview = matches.take(6).toList();
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(
+          'Add the account to ${matches.length} transaction'
+          '${matches.length == 1 ? '' : 's'}?',
+        ),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'These were added before their app was linked to an '
+                'account. Each app below is linked to only one account, so '
+                'it can be added safely.',
+              ),
+              const SizedBox(height: 8),
+              for (final m in preview)
+                Text(
+                  '${m.key.title} • ${m.key.source} → '
+                  '+ ${m.value.bank} ${m.value.last4}',
+                ),
+              if (matches.length > preview.length)
+                Text('…and ${matches.length - preview.length} more'),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Add account'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    for (final m in matches) {
+      final t = m.key;
+      final account = m.value;
+      await DatabaseHelper.instance.updateTransaction(Transaction(
+        id: t.id,
+        title: t.title,
+        source: '${t.source} • ${account.bank} ${account.last4}',
+        amount: t.amount,
+        date: t.date,
+        type: t.type,
+        category: t.category,
+      ));
+    }
+    _snack(
+      'Added an account to ${matches.length} '
+      'transaction${matches.length == 1 ? '' : 's'}',
+    );
+    await _load();
+  }
+
+  Widget _buildFillAccountsCard() {
+    final count = _missingAccountCandidates.length;
+    return _section(
+      title: 'Fill in missing accounts',
+      subtitle: count == 0
+          ? "Every transaction that can be matched to a single-account app "
+              "already has one. A transaction whose bank is shared by more "
+              "than one account (for example a plain \"SBI\" entry) can't be "
+              "filled in automatically — edit it and pick the account by "
+              "hand."
+          : '$count transaction${count == 1 ? '' : 's'} can be matched to '
+              'the one account their app is linked to.',
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: FilledButton.tonalIcon(
+          onPressed: count == 0 ? null : _fillMissingAccounts,
+          icon: const Icon(Icons.link),
+          label: Text(count == 0 ? 'Nothing to fill in' : 'Fill in accounts'),
+        ),
+      ),
+    );
+  }
+
   // ----------------------------------------------------------- cleanup (D29)
 
   /// Day 29: leftover promo/OTP/due-reminder SMS that got imported as
@@ -965,6 +1177,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                 _buildAccountsCard(),
                 _buildAppsCard(),
                 _buildNamesCard(),
+                _buildFillAccountsCard(),
                 _buildCleanupCard(),
               ],
             ),

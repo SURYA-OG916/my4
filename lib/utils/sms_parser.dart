@@ -9,6 +9,10 @@ import 'category_matcher.dart';
 /// carried in [partialAmount] / [partialType] / [partialMerchant] / [bankName]
 /// / [smsDate] so the UI can prefill an AddTransactionScreen instead of
 /// making the user start from a blank form.
+///
+/// Day 36: a successful parse also carries [availableBalance] (the
+/// "Avl Bal" printed in the SMS, if any) and [accountLast4] (the last four
+/// digits of the account/card the SMS is about, if any).
 class SmsParseResult {
   final Transaction? transaction;
   final String? failureReason;
@@ -21,12 +25,18 @@ class SmsParseResult {
   final String bankName;
   final DateTime? smsDate;
 
+  // Day 36
+  final double? availableBalance;
+  final String? accountLast4;
+
   SmsParseResult.success(
     this.transaction,
     this.rawBody,
     this.sender, {
     this.bankName = '',
     this.smsDate,
+    this.availableBalance,
+    this.accountLast4,
   })  : failureReason = null,
         partialAmount = null,
         partialType = null,
@@ -41,7 +51,9 @@ class SmsParseResult {
     this.partialMerchant,
     this.bankName = '',
     this.smsDate,
-  }) : transaction = null;
+  })  : transaction = null,
+        availableBalance = null,
+        accountLast4 = null;
 
   bool get isSuccess => transaction != null;
 }
@@ -120,6 +132,16 @@ class SmsParser {
     caseSensitive: false,
   );
 
+  // Day 34: a biller's "we have received payment of Rs.X for your <company>
+  // mobile/number ..." message confirms a bill YOU paid — money left your
+  // account, even though it says "received" (the biller received it, not
+  // you). Left to the generic keyword scan, "received" would wrongly flag
+  // this as a credit. When this matches, direction is forced to debit.
+  static final RegExp _billPaymentReceiptPattern = RegExp(
+    r'\breceived\s+payment\s+of\b[\s\S]{0,60}?\bfor\s+your\b[\s\S]{0,40}?\b(?:mobile|number|no\.?|bill)\b',
+    caseSensitive: false,
+  );
+
   // Merchant: text after "to", "at", "towards", or a VPA-looking token
   // (name@bank). Tries the SBI "trf to/from NAME Refno" form first, then
   // VPA (most reliable generic signal), then keyword-prefixed text.
@@ -144,6 +166,36 @@ class SmsParser {
     caseSensitive: false,
   );
 
+  // Day 34: "for your Airtel mobile 919600302924" / "for your Airtel No.
+  // 9600302924" — the biller name in a bill-payment-receipt message. Used
+  // as a merchant-name fallback only for messages matching
+  // [_billPaymentReceiptPattern], since plain "for" isn't used elsewhere as
+  // a merchant-introducing word.
+  static final RegExp _billCompanyPattern = RegExp(
+    r'\bfor\s+your\s+([A-Za-z]+)\s+(?:mobile|number|no\.?)\b',
+    caseSensitive: false,
+  );
+
+  // Day 36: "Avl Bal Rs. 5,002.14." / "Avl. Bal. INR 3,012.04" — the balance
+  // an SMS prints after the transaction. group 1 = the number.
+  static final RegExp _availBalPattern = RegExp(
+    r'\bavl\.?\s*bal(?:ance)?\.?\s*(?:is\s*)?(?:rs\.?|inr|₹)?\s*([\d,]+(?:\.\d{1,2})?)',
+    caseSensitive: false,
+  );
+
+  // Day 36: last four digits of the account/card the SMS is about.
+  //   "A/C X3835"   "a/c xx9809"   "card ending 0678"   "Account ending 3742"
+  // group 1 = the four digits.
+  static final RegExp _accountLast4Pattern = RegExp(
+    r'\b(?:a\/c|acct|account|card)\s*(?:no\.?|number)?\s*(?:x+|\*+|ending(?:\s+with)?)?\s*(\d{4})\b',
+    caseSensitive: false,
+  );
+  // Fallback: a bare mask like "XX1234" or "**1234".
+  static final RegExp _maskedLast4Pattern = RegExp(
+    r'(?:\bx+|\*{2,})(\d{4})\b',
+    caseSensitive: false,
+  );
+
   // ---- Day 28: Slice SMS (sender "AD-SLCBNK-S" / "VM-SLCBNK-T") ----------
   // Slice sends an SMS for money you SEND, e.g.
   //   "Rs. 5,000 sent from a/c xx9809 on 11-Sep-26 to Mr Ramanan Duraisamy
@@ -160,9 +212,16 @@ class SmsParser {
   );
 
   // groups: 1 = amount, 2 = last 4 digits, 3 = name
+  //
+  // Day 36: Slice's real wording is "Rs. 5,000 received in A/c 9809 from
+  // A/c 0148 on 25-Sep-26. (Ref ID: ...). Avl Bal Rs. 5,002.14. - slice".
+  // The old pattern required the word "slice" before "a/c", so this form
+  // never matched, was parsed by the generic parser (no Avl Bal read, no
+  // account number) and left the Slice balance stale. The word "slice" is
+  // now optional, and the name stops before " on <date>".
   static final RegExp _sliceReceived = RegExp(
     _sliceAmount +
-        r'\s+received\s+in\s+slice\s+a/c\s*(?:xx+|\*+)?(\d{4})?[\s\S]*?\bfrom\s+([\s\S]+?)\s*(?:\(|\bupi\s+ref\b|\bnot you\b|\.\s|\.$|$)',
+        r'\s+received\s+in\s+(?:slice\s+)?a/c\s*(?:xx+|\*+)?(\d{4})?[\s\S]*?\bfrom\s+([\s\S]+?)\s*(?:\(|\bupi\s+ref\b|\bnot you\b|\s+on\s+\d|\.\s|\.$|$)',
     caseSensitive: false,
   );
 
@@ -221,15 +280,30 @@ class SmsParser {
       );
     }
 
+    // Day 34: a bill-payment RECEIPT ("we have received payment of Rs.X for
+    // your Airtel mobile ...") is checked before the generic keyword scan,
+    // since it contains "received" but actually means money left your
+    // account, not that you got paid.
+    final bool isBillPaymentReceipt = _billPaymentReceiptPattern.hasMatch(body);
+
     // Direction is judged with "credit card" / "debit card" wording removed.
     final String directionText = body.replaceAll(_cardWords, ' ');
     final bool isDebit = _debitPattern.hasMatch(directionText);
     final bool isCredit = _creditPattern.hasMatch(directionText);
-    final TransactionType? detectedType = (isDebit != isCredit)
+    TransactionType? detectedType = (isDebit != isCredit)
         ? (isDebit ? TransactionType.debit : TransactionType.credit)
         : null;
+    if (isBillPaymentReceipt) {
+      detectedType = TransactionType.debit;
+    }
 
-    final String? merchantGuess = _extractMerchant(body);
+    String? merchantGuess = _extractMerchant(body);
+    if (merchantGuess == null && isBillPaymentReceipt) {
+      final billCompanyMatch = _billCompanyPattern.firstMatch(body);
+      if (billCompanyMatch != null) {
+        merchantGuess = _cleanName(billCompanyMatch.group(1));
+      }
+    }
 
     final amountMatch = _amountAfterVerbPattern.firstMatch(body) ??
         _amountPattern.firstMatch(body);
@@ -275,11 +349,17 @@ class SmsParser {
     final String merchant = merchantGuess ?? bankName;
     final String category = CategoryMatcher.categorize(merchant, bankName: bankName);
 
+    // Day 36: keep the account the SMS is about ("SBI 3835") so the
+    // transaction shows which account it went through.
+    final String? accountLast4 = _extractAccountLast4(body);
+    final String source =
+        accountLast4 == null ? bankName : '$bankName $accountLast4';
+
     final transaction = Transaction(
       id: DateTime.now().millisecondsSinceEpoch.toString() +
           '_${sender.hashCode}',
       title: merchant,
-      source: bankName,
+      source: source,
       amount: amount,
       date: smsDate,
       type: detectedType,
@@ -290,8 +370,10 @@ class SmsParser {
       transaction,
       body,
       sender,
-      bankName: bankName,
+      bankName: source,
       smsDate: smsDate,
+      availableBalance: _extractAvailableBalance(body),
+      accountLast4: accountLast4,
     );
   }
 
@@ -371,12 +453,26 @@ class SmsParser {
       sender,
       bankName: source,
       smsDate: smsDate,
+      availableBalance: _extractAvailableBalance(body),
+      accountLast4: last4,
     );
   }
 
   static double? _toAmount(String? raw) {
     if (raw == null) return null;
     return double.tryParse(raw.replaceAll(',', ''));
+  }
+
+  static double? _extractAvailableBalance(String body) {
+    final match = _availBalPattern.firstMatch(body);
+    if (match == null) return null;
+    return _toAmount(match.group(1));
+  }
+
+  static String? _extractAccountLast4(String body) {
+    final match = _accountLast4Pattern.firstMatch(body) ??
+        _maskedLast4Pattern.firstMatch(body);
+    return match?.group(1);
   }
 
   static String? _cleanName(String? raw) {
@@ -406,9 +502,10 @@ class SmsParser {
   static String? _extractMerchant(String body) {
     final trfMatch = _trfPattern.firstMatch(body);
     if (trfMatch != null) {
-      final String candidate = trfMatch.group(1)!.trim();
-      if (candidate.isNotEmpty) {
-        return candidate;
+      // Day 36: collapse double spaces ("Mr  CHELLAPANDI" -> "Mr CHELLAPANDI").
+      final String? cleaned = _cleanName(trfMatch.group(1));
+      if (cleaned != null) {
+        return cleaned;
       }
     }
 

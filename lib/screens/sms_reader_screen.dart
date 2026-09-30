@@ -3,11 +3,12 @@ import 'package:another_telephony/telephony.dart' hide SmsFilter;
 import '../db/database_helper.dart';
 import '../models/transaction.dart';
 import '../utils/sms_parser.dart';
-import '../utils/sms_filter.dart';
+import '../utils/sms_ingestor.dart';
 import '../utils/slice_balance.dart';
 import '../utils/category_helper.dart';
 import '../utils/duplicate_helper.dart';
 import '../utils/needs_review_store.dart';
+import '../utils/transfer_helper.dart';
 import 'add_transaction_screen.dart';
 import 'needs_review_screen.dart';
 
@@ -33,6 +34,7 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
   bool _permissionDenied = false;
 
   int _autoAddedCount = 0;
+  int _enrichedCount = 0;
   int _skippedAlreadyProcessed = 0;
   final List<SmsParseResult> _needsReview = [];
 
@@ -70,137 +72,37 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
     await _loadMessages();
   }
 
+  /// Day 36: the parsing/adding itself now lives in SmsIngestor (also run
+  /// when the app starts or resumes). This screen just runs it and shows the
+  /// outcome.
   Future<void> _loadMessages() async {
     setState(() => _loading = true);
 
-    final List<SmsMessage> messages = await telephony.getInboxSms(
-      columns: [
-        SmsColumn.ADDRESS,
-        SmsColumn.BODY,
-        SmsColumn.DATE,
-      ],
-      sortOrder: [
-        OrderBy(SmsColumn.DATE, sort: Sort.DESC),
-      ],
-    );
-
-    setState(() {
-      _messages = messages;
-      _loading = false;
-    });
-
-    await _parseAndInsertTransactions(messages);
-  }
-
-  // Day 28: first-pass filter now lives in lib/utils/sms_filter.dart so
-  // promos, OTPs, due reminders etc. are rejected before parsing.
-  // (another_telephony also exports a class named SmsFilter, so it is
-  // hidden in the import above to avoid a name clash.)
-  bool _looksLikeTransactionSms(SmsMessage msg) {
-    return SmsFilter.looksLikeTransaction(
-      sender: msg.address ?? '',
-      body: msg.body ?? '',
-    );
-  }
-
-  /// Runs every flagged SMS through SmsParser, skipping any SMS whose
-  /// hash is already in processed_sms. Successful parses that don't match
-  /// an existing transaction are auto-inserted and marked processed
-  /// immediately. Successful parses that DO match an existing transaction
-  /// (same amount/type/day) are diverted into Needs Review instead of
-  /// silently auto-inserting a likely duplicate — the user decides there.
-  /// Day 28: Slice SMS are never auto-inserted; every one waits in Needs
-  /// Review for the user's OK (only earlier Slice entries count as "similar").
-  /// True failures are collected into [_needsReview] as before. Neither
-  /// diverted duplicates nor true failures are marked processed — an
-  /// unresolved needs-review SMS must keep reappearing on every refresh
-  /// until the user actually saves a transaction for it (see
-  /// [_openNeedsReviewItem]) or explicitly dismisses it (see
-  /// [_dismissNeedsReviewItem]), otherwise it gets silently marked "done"
-  /// and vanishes without ever being resolved.
-  Future<void> _parseAndInsertTransactions(List<SmsMessage> messages) async {
-    final flagged = messages.where(_looksLikeTransactionSms).toList();
-
-    int autoAdded = 0;
-    int skipped = 0;
-    final List<SmsParseResult> reviewList = [];
-
-    for (final msg in flagged) {
-      final hash = DatabaseHelper.smsHash(
-        sender: msg.address ?? '',
-        body: msg.body ?? '',
-        dateMillis: msg.date,
-      );
-
-      final alreadyProcessed = await DatabaseHelper.instance.isSmsProcessed(hash);
-      if (alreadyProcessed) {
-        skipped++;
-        continue;
-      }
-
-      final result = SmsParser.parse(
-        sender: msg.address ?? '',
-        body: msg.body ?? '',
-        dateMillis: msg.date,
-      );
-
-      if (result.isSuccess) {
-        final txn = result.transaction!;
-        final duplicates = await DatabaseHelper.instance.findPotentialDuplicates(
-          amount: txn.amount,
-          type: txn.type,
-          date: txn.date,
-        );
-
-        // Slice always asks first, and is only compared with other Slice
-        // entries so a same-amount payment from another app isn't flagged.
-        final askFirst = isSliceSource(txn.source);
-        final similar = askFirst
-            ? duplicates.where((t) => isSliceSource(t.source)).toList()
-            : duplicates;
-
-        if (similar.isNotEmpty || askFirst) {
-          reviewList.add(SmsParseResult.failure(
-            similar.isNotEmpty
-                ? 'Possible duplicate of an existing transaction (same '
-                    'amount, type, and date)'
-                : 'Slice payment: waiting for your OK',
-            result.rawBody,
-            result.sender,
-            partialAmount: txn.amount,
-            partialType: txn.type,
-            partialMerchant: txn.title,
-            bankName: txn.source,
-            smsDate: txn.date,
-          ));
-        } else {
-          await DatabaseHelper.instance.insertTransaction(txn);
-          await DatabaseHelper.instance.markSmsProcessed(hash);
-          autoAdded++;
-        }
-      } else {
-        reviewList.add(result);
-      }
-    }
+    final result = await SmsIngestor.run();
 
     if (!mounted) return;
     setState(() {
-      _autoAddedCount = autoAdded;
-      _skippedAlreadyProcessed = skipped;
+      _messages = result.messages;
+      _autoAddedCount = result.autoAdded;
+      _enrichedCount = result.enriched;
+      _skippedAlreadyProcessed = result.skipped;
       _needsReview
         ..clear()
-        ..addAll(reviewList);
+        ..addAll(result.needsReview);
+      _loading = false;
     });
     // Keep the cross-screen store in sync so main.dart's "+" add flow and
     // the Needs Review page can see what's currently pending here.
     NeedsReviewStore.instance.setAll(_needsReview);
 
-    // New categories may have been introduced by auto-added transactions
-    // (e.g. a new merchant keyword match) — refresh so the needs-review
-    // dropdown reflects them too.
-    if (autoAdded > 0) {
+    // New categories may have been introduced by auto-added transactions.
+    if (result.autoAdded > 0) {
       await _loadExistingCategories();
     }
+  }
+
+  bool _looksLikeTransactionSms(SmsMessage msg) {
+    return SmsIngestor.looksLikeTransactionSms(msg);
   }
 
   /// Builds a draft Transaction from whatever partial data the parser
@@ -506,6 +408,7 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
             children: [
               Text(
                 'Auto-added: $_autoAddedCount   •   '
+                'Account filled in: $_enrichedCount   •   '
                 'Already processed (skipped): $_skippedAlreadyProcessed',
                 style: const TextStyle(fontWeight: FontWeight.bold),
               ),

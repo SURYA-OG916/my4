@@ -11,6 +11,7 @@ import 'utils/notification_ingestor.dart';
 import 'utils/balance_helper.dart';
 import 'utils/category_matcher.dart';
 import 'utils/transfer_helper.dart';
+import 'utils/category_colors.dart';
 import 'screens/transaction_detail_screen.dart';
 import 'screens/add_transaction_screen.dart';
 import 'screens/category_summary_screen.dart';
@@ -40,6 +41,32 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'MY4',
+      // Day 35: a quiet, elegant Material theme — flat surfaces, a single
+      // deep-charcoal seed color instead of stock Material blue, so the
+      // new category palette does the visual talking.
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF3D3D3D),
+          brightness: Brightness.light,
+        ),
+        scaffoldBackgroundColor: const Color(0xFFFAFAF8),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFFFAFAF8),
+          foregroundColor: Color(0xFF2B2B2B),
+          elevation: 0,
+          scrolledUnderElevation: 0,
+          centerTitle: false,
+          titleTextStyle: TextStyle(
+            color: Color(0xFF2B2B2B),
+            fontSize: 20,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+        listTileTheme: const ListTileThemeData(
+          iconColor: Color(0xFF5C5C5C),
+        ),
+      ),
       // Day 27: LockGate sits above the Navigator so it also covers every
       // screen that has been pushed, not just the home screen.
       builder: (context, child) =>
@@ -185,13 +212,14 @@ class _TransactionListScreenState extends State<TransactionListScreen>
         ? transferCategory
         : CategoryMatcher.categorize(quick.title);
 
-    final now = DateTime.now();
+    // Day 36: uses the date/time the user picked in the sheet, not always
+    // "now" — a Quick Add is often entered after the fact.
     final txn = Transaction(
-      id: now.millisecondsSinceEpoch.toString(),
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
       title: quick.title,
       source: quick.source,
       amount: quick.amount,
-      date: now,
+      date: quick.date,
       type: quick.type,
       category: category,
     );
@@ -237,6 +265,7 @@ class _TransactionListScreenState extends State<TransactionListScreen>
   }
 
   void _openRecurringScreen() {
+    Navigator.pop(context); // close the drawer first
     Navigator.push(
       context,
       MaterialPageRoute(
@@ -246,6 +275,7 @@ class _TransactionListScreenState extends State<TransactionListScreen>
   }
 
   Future<void> _openNotificationReader() async {
+    Navigator.pop(context); // close the drawer first
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -257,6 +287,7 @@ class _TransactionListScreenState extends State<TransactionListScreen>
   }
 
   Future<void> _openAccountsScreen() async {
+    Navigator.pop(context); // close the drawer first
     await Navigator.push(
       context,
       MaterialPageRoute(
@@ -268,10 +299,33 @@ class _TransactionListScreenState extends State<TransactionListScreen>
   }
 
   void _openExportScreen() {
+    Navigator.pop(context); // close the drawer first
     Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const ExportScreen()),
     );
+  }
+
+  Future<void> _openTrendsScreen() async {
+    Navigator.pop(context); // close the drawer first
+    final pickedMonth = await Navigator.push<DateTime>(
+      context,
+      MaterialPageRoute(builder: (context) => const TrendsScreen()),
+    );
+    if (pickedMonth != null) {
+      setState(() {
+        _selectedMonth = DateTime(pickedMonth.year, pickedMonth.month, 1);
+      });
+    }
+  }
+
+  Future<void> _openSmsReaderScreen() async {
+    Navigator.pop(context); // close the drawer first
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const SmsReaderScreen()),
+    );
+    await _loadTransactions();
   }
 
   String _monthLabel(DateTime month) {
@@ -475,6 +529,100 @@ class _TransactionListScreenState extends State<TransactionListScreen>
     return parts.join(' · ');
   }
 
+  // Day 35: the app's secondary screens, moved out of the AppBar (which was
+  // getting crowded with six+ icons) into a Drawer. Search and Category
+  // Summary stay in the AppBar since they're used every session; everything
+  // else here is opened less often.
+  Widget _buildDrawer() {
+    return Drawer(
+      backgroundColor: const Color(0xFFFAFAF8),
+      child: SafeArea(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+              child: const Text(
+                'MY4',
+                style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                  color: Color(0xFF2B2B2B),
+                  letterSpacing: 0.5,
+                ),
+              ),
+            ),
+            const Divider(height: 1),
+            const SizedBox(height: 8),
+            _drawerItem(
+              icon: Icons.show_chart,
+              label: 'Spending Trends',
+              color: const Color(0xFF6B8CAE),
+              onTap: _openTrendsScreen,
+            ),
+            _drawerItem(
+              icon: Icons.repeat,
+              label: 'Recurring',
+              color: const Color(0xFF9B7EBD),
+              onTap: _openRecurringScreen,
+            ),
+            _drawerItem(
+              icon: Icons.notifications_active_outlined,
+              label: 'Notification Reader',
+              color: const Color(0xFF5A8F6E),
+              onTap: _openNotificationReader,
+            ),
+            _drawerItem(
+              icon: Icons.sms_outlined,
+              label: 'SMS Reader',
+              color: const Color(0xFFC9A227),
+              onTap: _openSmsReaderScreen,
+            ),
+            const SizedBox(height: 8),
+            const Divider(height: 1),
+            const SizedBox(height: 8),
+            _drawerItem(
+              icon: Icons.account_balance_outlined,
+              label: 'Accounts & balance',
+              color: const Color(0xFF6C6FA8),
+              onTap: _openAccountsScreen,
+            ),
+            _drawerItem(
+              icon: Icons.ios_share,
+              label: 'Export data',
+              color: const Color(0xFF6E6E6E),
+              onTap: _openExportScreen,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _drawerItem({
+    required IconData icon,
+    required String label,
+    required Color color,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      leading: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.14),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon, color: color, size: 20),
+      ),
+      title: Text(
+        label,
+        style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
+      ),
+      onTap: onTap,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_isLoading) {
@@ -550,6 +698,7 @@ class _TransactionListScreenState extends State<TransactionListScreen>
     final listItems = buildGroupedListItems(grouped);
 
     return Scaffold(
+      drawer: _buildDrawer(),
       appBar: AppBar(
         title: _isSearching
             ? TextField(
@@ -566,7 +715,7 @@ class _TransactionListScreenState extends State<TransactionListScreen>
                   });
                 },
               )
-            : const Text('Transactions'),
+            : const Text('MY4'),
         actions: [
           IconButton(
             icon: Icon(_isSearching ? Icons.close : Icons.search),
@@ -574,60 +723,11 @@ class _TransactionListScreenState extends State<TransactionListScreen>
             onPressed: _toggleSearch,
           ),
           IconButton(
-            icon: const Icon(Icons.pie_chart),
+            icon: const Icon(Icons.pie_chart_outline),
             tooltip: 'Category Summary',
             onPressed: () => _openCategorySummary(monthFiltered),
           ),
-          IconButton(
-            icon: const Icon(Icons.show_chart),
-            tooltip: 'Spending Trends',
-            onPressed: () async {
-              final pickedMonth = await Navigator.push<DateTime>(
-                context,
-                MaterialPageRoute(builder: (context) => const TrendsScreen()),
-              );
-              if (pickedMonth != null) {
-                setState(() {
-                  _selectedMonth = DateTime(pickedMonth.year, pickedMonth.month, 1);
-                });
-              }
-            },
-          ),
-          IconButton(
-            icon: const Icon(Icons.repeat),
-            tooltip: 'Recurring',
-            onPressed: _openRecurringScreen,
-          ),
-          IconButton(
-            icon: const Icon(Icons.notifications_active_outlined),
-            tooltip: 'Notification Reader',
-            onPressed: _openNotificationReader,
-          ),
-          IconButton(
-            icon: const Icon(Icons.sms_outlined),
-            tooltip: 'SMS Reader',
-            onPressed: () async {
-              await Navigator.push(
-                context,
-                MaterialPageRoute(builder: (context) => const SmsReaderScreen()),
-              );
-              await _loadTransactions();
-            },
-          ),
-          PopupMenuButton<String>(
-            tooltip: 'More',
-            onSelected: (value) {
-              if (value == 'accounts') {
-                _openAccountsScreen();
-              } else if (value == 'export') {
-                _openExportScreen();
-              }
-            },
-            itemBuilder: (context) => const [
-              PopupMenuItem(value: 'accounts', child: Text('Accounts & balance')),
-              PopupMenuItem(value: 'export', child: Text('Export data')),
-            ],
-          ),
+          const SizedBox(width: 4),
         ],
       ),
       body: Column(
@@ -704,6 +804,11 @@ class _TransactionListScreenState extends State<TransactionListScreen>
                       }
 
                       final txn = item as Transaction;
+                      // Day 35: leading icon is now a soft category-colored
+                      // circle with the debit/credit arrow inside, instead
+                      // of a bare red/green arrow — ties each row visually
+                      // to its category chip and Category Summary color.
+                      final catColor = categoryColor(txn.category);
                       return ListTile(
                         onTap: () async {
                           final updated = await Navigator.push<Transaction>(
@@ -728,16 +833,34 @@ class _TransactionListScreenState extends State<TransactionListScreen>
                             });
                           }
                         },
-                        leading: Icon(
-                          txn.type == TransactionType.debit
-                              ? Icons.arrow_upward
-                              : Icons.arrow_downward,
-                          color: txn.type == TransactionType.debit
-                              ? Colors.red
-                              : Colors.green,
+                        leading: Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: catColor.withOpacity(0.14),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(
+                            txn.type == TransactionType.debit
+                                ? Icons.arrow_upward
+                                : Icons.arrow_downward,
+                            color: catColor,
+                            size: 20,
+                          ),
                         ),
-                        title: Text(txn.title),
-                        subtitle: Text('${txn.source} • ${txn.category}'),
+                        title: Text(
+                          txn.title,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        // Day 36: each row now also shows the time of day
+                        // (e.g. "14:05"), not just the date the section
+                        // header already groups by — needed to check the
+                        // real order of same-day transactions.
+                        subtitle: Text(
+                          '${txn.source} • ${txn.category} • '
+                          '${txn.date.hour.toString().padLeft(2, '0')}:'
+                          '${txn.date.minute.toString().padLeft(2, '0')}',
+                        ),
                         trailing: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
@@ -745,8 +868,8 @@ class _TransactionListScreenState extends State<TransactionListScreen>
                               '${txn.type == TransactionType.debit ? '-' : '+'}₹${txn.amount.toStringAsFixed(2)}',
                               style: TextStyle(
                                 color: txn.type == TransactionType.debit
-                                    ? Colors.red
-                                    : Colors.green,
+                                    ? const Color(0xFFB5654A)
+                                    : const Color(0xFF5A8F6E),
                                 fontWeight: FontWeight.bold,
                               ),
                             ),

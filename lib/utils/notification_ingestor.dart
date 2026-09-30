@@ -9,6 +9,7 @@ import 'needs_review_store.dart';
 import 'notification_parser.dart';
 import 'recategorizer.dart';
 import 'slice_balance.dart';
+import 'sms_ingestor.dart';
 import 'transfer_helper.dart';
 
 // Turns captured UPI-app notifications into real transactions.
@@ -16,9 +17,18 @@ import 'transfer_helper.dart';
 // Rules (mirrors the SMS pipeline):
 //  - successful parse + no possible duplicate  -> auto-inserted
 //  - successful parse + possible duplicate     -> "needs review" (user decides)
-//  - Day 28: apps in approvalRequiredPackages (Slice) are NEVER auto-inserted;
-//    every successful parse waits in "needs review" until the user taps Add.
-//    Only earlier entries from the same app are offered as "similar".
+//  - Day 28 rule dropped on Day 35: Slice notifications no longer always
+//    wait for approval. They now follow the same auto-insert-if-no-duplicate
+//    flow as every other payment app.
+//  - Day 36: because of that, an auto-added Slice notification now also saves
+//    the "Avl. Bal." it quotes as the Slice balance. (Before, only the old
+//    approval path did, so the balance silently stopped updating on Day 35.)
+//  - Day 36: a payment from an app that is linked to exactly ONE bank account
+//    (Accounts & balance -> UPI apps) and whose notification names no account
+//    gets that account added to its source, e.g. "Google Pay • SBI 3742".
+//  - Day 36: run() also runs the SMS pipeline (SmsIngestor), so bank SMS are
+//    picked up when the app starts or returns to the foreground, not only when
+//    SMS Reader is opened.
 //  - Day 32: two payments from DIFFERENT payment apps with DIFFERENT names
 //    (for example a GPay credit from Harish and a WhatsApp Pay credit from
 //    Yogarathinam) are no longer treated as duplicates of each other just
@@ -124,6 +134,8 @@ class NotificationIngestResult {
 
   /// Newest first.
   final List<NotificationEntry> entries;
+
+  /// Transactions added this run, from notifications AND from SMS.
   final int addedCount;
 
   const NotificationIngestResult({
@@ -144,7 +156,8 @@ class NotificationIngestResult {
       .toList();
 
   /// Promotions, chats, rewards, failed payments, and payments the user
-  /// dismissed: captured but not added as transactions.
+  /// dismissed:
+  /// captured but not added as transactions.
   List<NotificationEntry> get ignored => entries
       .where((e) =>
           e.status == NotificationStatus.ignored ||
@@ -261,6 +274,42 @@ class NotificationIngestor {
         .toList();
   }
 
+  /// Day 36: when the notification names no account and its app is linked to
+  /// exactly one bank account, add that account to the source
+  /// ("Google Pay" -> "Google Pay • SBI 3742"). Sources that already carry
+  /// an account number, or a second part such as "Samsung Wallet • SBI", and
+  /// Slice itself are left alone. With two or more linked accounts nothing
+  /// is guessed.
+  static Future<Transaction> _tagLinkedAccount(
+    Transaction t,
+    CapturedNotification n,
+  ) async {
+    if (n.packageName == slicePackage) return t;
+    if (RegExp(r'\d{4}').hasMatch(t.source)) return t;
+    if (t.source.contains(' • ')) return t;
+
+    final links = await DatabaseHelper.instance.getAppLinks();
+    final ids = links[n.packageName];
+    if (ids == null || ids.isEmpty) return t;
+
+    final accounts = await DatabaseHelper.instance.getAllAccounts();
+    final linked = accounts
+        .where((a) => ids.contains(a.id) && !isSliceSource(a.bank))
+        .toList();
+    if (linked.length != 1) return t;
+
+    final account = linked.first;
+    return Transaction(
+      id: t.id,
+      title: t.title,
+      source: '${t.source} • ${account.bank} ${account.last4}',
+      amount: t.amount,
+      date: t.date,
+      type: t.type,
+      category: t.category,
+    );
+  }
+
   static Future<NotificationIngestResult> _run() async {
     final enabled =
         await _channel.invokeMethod<bool>('isListenerEnabled') ?? false;
@@ -308,7 +357,8 @@ class NotificationIngestor {
         continue;
       }
 
-      final draft = _buildTransaction(n, parsed, ownNames);
+      final draft =
+          await _tagLinkedAccount(_buildTransaction(n, parsed, ownNames), n);
 
       final duplicates = _dropClearlyDifferent(
         await DatabaseHelper.instance.findPotentialDuplicates(
@@ -318,27 +368,6 @@ class NotificationIngestor {
         ),
         parsed,
       );
-
-      // Day 28: Slice always waits for the user's permission. Only earlier
-      // entries from the same app count as "similar", so a ₹1 credit from
-      // Samsung Wallet no longer looks like a duplicate of a ₹1 Slice credit.
-      if (approvalRequiredPackages.contains(n.packageName)) {
-        final sameApp = duplicates
-            .where((t) => t.source.startsWith(parsed.appLabel))
-            .toList();
-        entries.add(NotificationEntry(
-          notification: n,
-          parsed: parsed,
-          status: NotificationStatus.needsReview,
-          draft: draft,
-          awaitingApproval: true,
-          duplicateNotes: [
-            for (final t in sameApp)
-              'Similar: ${t.title} • ₹${t.amount.toStringAsFixed(2)} • ${_formatDate(t.date)}',
-          ],
-        ));
-        continue;
-      }
 
       final pendingSms = NeedsReviewStore.instance.findMatching(
         amount: draft.amount,
@@ -350,6 +379,14 @@ class NotificationIngestor {
         await DatabaseHelper.instance.insertTransaction(draft);
         await DatabaseHelper.instance.markSmsProcessed(n.hash);
         addedCount++;
+
+        // Day 36: Slice quotes its own balance ("Avl. Bal. ₹2.14"). Now that
+        // Slice payments are auto-added, keep that balance up to date here.
+        final balance = parsed.availableBalance;
+        if (balance != null && n.packageName == slicePackage) {
+          await SliceBalance.saveIfNewer(balance, n.postedAt);
+        }
+
         entries.add(NotificationEntry(
           notification: n,
           parsed: parsed,
@@ -375,6 +412,13 @@ class NotificationIngestor {
 
     entries.sort((a, b) =>
         b.notification.postTime.compareTo(a.notification.postTime));
+
+    // Day 36: bank SMS are picked up here too, so they no longer wait for
+    // SMS Reader to be opened. Never lets an SMS problem break notifications.
+    try {
+      final sms = await SmsIngestor.run();
+      addedCount += sms.autoAdded + sms.enriched;
+    } catch (_) {}
 
     return NotificationIngestResult(
       listenerEnabled: enabled,

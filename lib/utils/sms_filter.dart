@@ -36,9 +36,15 @@ class SmsFilter {
 
   // Wording that means "this is NOT a completed transaction", even if an
   // amount and a verb also appear in the message.
+  //
+  // Day 34: the "avoid disconnection" branch used to only tolerate a single
+  // optional word ("service") between "avoid" and "disconnection", so a real
+  // Airtel warning ("avoid call & data service disconnection") slipped past
+  // it. Widened to tolerate a few words in between.
   static final RegExp _hardBlock = RegExp(
     r'\botp\b|one[\s-]?time password|verification code|\bpre[\s-]?approved\b|'
-    r'avoid (?:service )?(?:disconnection|suspension|late fee)|apply now|'
+    r'avoid\s+(?:[a-z&]+\s+){0,3}(?:disconnection|suspension|late\s*fee)|'
+    r'apply now|'
     r'click (?:here|below|the link)|download (?:the )?app|'
     r'requested (?:money|rs\.?|₹|inr|you)|collect request|payment request|'
     r'will be (?:debited|charged|deducted)|\b(?:is|are) due\b|'
@@ -67,8 +73,13 @@ class SmsFilter {
   );
 
   // Something that ties the message to an account / card / UPI handle.
+  //
+  // Day 34: added `mobile` so a genuine bill-payment-receipt SMS ("received
+  // payment of Rs.X for your Airtel mobile ...") isn't dropped here just for
+  // lacking an a/c or UPI-style marker. Promo/OTP messages that also say
+  // "mobile" are still stopped earlier by _hardBlock, so this stays safe.
   static final RegExp _bankContext = RegExp(
-    r'\b(?:a\/c|acct|account|upi|card|imps|neft|rtgs|vpa|wallet|atm)\b|'
+    r'\b(?:a\/c|acct|account|upi|card|imps|neft|rtgs|vpa|wallet|atm|mobile)\b|'
     r'\bx+\d{2,}|@[a-z]{2,}|\brefno\b|\bref\b|\btxn\b',
     caseSensitive: false,
   );
