@@ -76,23 +76,47 @@ class AccountBalance {
     return source.contains(bankFirstWord) && source.contains(last4);
   }
 
-  /// Day 36: looser than BalanceHelper's version on purpose. An individual
-  /// account balance tends to get re-typed casually, at any time of day, so
-  /// requiring the transaction to come strictly after the exact time you
-  /// typed it in (unless it has no time at all) meant a same-day payment
-  /// could silently be assumed "already included" even when it wasn't.
-  /// Here, ANY transaction on the same calendar day as [asOf] counts,
-  /// regardless of the time on either side — only transactions from an
-  /// earlier day are treated as already covered by the typed-in amount.
+  /// Day 37: true when [d] carries no time of day (exactly midnight), which
+  /// is how entries made with the date picker are stored.
+  static bool _isDateOnly(DateTime d) =>
+      d.hour == 0 && d.minute == 0 && d.second == 0 && d.millisecond == 0;
+
+  /// Day 37: a transaction counts on top of the typed-in amount only if it
+  /// happened AFTER the moment the amount was typed.
+  ///
+  /// Day 36 counted every transaction on the same calendar day as [asOf],
+  /// whatever its time. That double-counted anything that had already
+  /// happened earlier that day and was therefore already inside the balance
+  /// the user read off their bank app (this is why SBI 3835 drifted above the
+  /// real balance). Now:
+  ///  * a transaction with a time counts only if it is after [asOf];
+  ///  * a date-only (midnight) transaction on the same day as [asOf] still
+  ///    counts, because it has no time to compare and is usually a manual
+  ///    entry made after typing the balance. An earlier day never counts.
   static bool _isAfterSnapshot(DateTime date, DateTime asOf) {
     if (date.isAfter(asOf)) return true;
-    return date.year == asOf.year &&
+    final sameDay = date.year == asOf.year &&
         date.month == asOf.month &&
         date.day == asOf.day;
+    return sameDay && _isDateOnly(date);
   }
 
   static double _signed(Transaction t) {
     return t.type == TransactionType.credit ? t.amount : -t.amount;
+  }
+
+  /// Day 37: the exact transactions [currentBalance] adds on top of the
+  /// typed-in amount, so the Accounts screen can show what is being counted.
+  static List<Transaction> countedTransactions(
+    AccountBalanceSnapshot snapshot,
+    BankAccount account,
+    List<Transaction> transactions,
+  ) {
+    return transactions
+        .where((t) =>
+            belongsToAccount(t, account) &&
+            _isAfterSnapshot(t.date, snapshot.asOf))
+        .toList();
   }
 
   /// Today's balance for one account: the value the user last typed in, plus
@@ -107,9 +131,7 @@ class AccountBalance {
     List<Transaction> transactions,
   ) {
     var balance = snapshot.amount;
-    for (final t in transactions) {
-      if (!belongsToAccount(t, account)) continue;
-      if (!_isAfterSnapshot(t.date, snapshot.asOf)) continue;
+    for (final t in countedTransactions(snapshot, account, transactions)) {
       balance += _signed(t);
     }
     return balance;

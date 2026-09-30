@@ -364,11 +364,17 @@ class _AccountsScreenState extends State<AccountsScreen> {
   }
 
   // Balance for one bank account (typed in by the user).
+  //
+  // Day 37: the box now starts empty (it used to be pre-filled with the old
+  // typed-in baseline, which is not the number shown on the tile), and the
+  // dialog says what MY4 currently shows so you can compare it with your
+  // bank app.
   Future<void> _editAccountBalance(BankAccount account) async {
     final existing = _accountBalances[account.id];
-    final controller = TextEditingController(
-      text: existing == null ? '' : existing.amount.toStringAsFixed(2),
-    );
+    final shown = existing == null
+        ? null
+        : AccountBalance.currentBalance(existing, account, _transactions);
+    final controller = TextEditingController();
     final value = await showDialog<double>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -381,6 +387,13 @@ class _AccountsScreenState extends State<AccountsScreen> {
               'Enter what this account shows in your bank app right now. '
               "MY4 can't read it, so update it now and then.",
             ),
+            if (shown != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'MY4 currently shows ₹${shown.toStringAsFixed(2)}.',
+                style: TextStyle(color: Colors.grey.shade700),
+              ),
+            ],
             const SizedBox(height: 12),
             TextField(
               controller: controller,
@@ -482,6 +495,90 @@ class _AccountsScreenState extends State<AccountsScreen> {
     await _load();
   }
 
+  // Day 37: lists exactly which transactions are being added on top of the
+  // balance you typed in, so a wrong number can be traced to the entry that
+  // shouldn't be there (edit or delete it from the main list).
+  Future<void> _showCountedTransactions(BankAccount account) async {
+    final snap = _accountBalances[account.id];
+    if (snap == null) return;
+
+    final counted = AccountBalance.countedTransactions(
+      snap,
+      account,
+      _transactions,
+    );
+    counted.sort((a, b) => b.date.compareTo(a.date));
+    final net = counted.fold<double>(
+      0,
+      (sum, t) => sum + (t.type == TransactionType.credit ? t.amount : -t.amount),
+    );
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text("What's counted for ${account.label}"),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'You typed ₹${snap.amount.toStringAsFixed(2)} on '
+                '${_formatDateTime(snap.asOf)}. These transactions were '
+                'added on top of it:',
+                style: TextStyle(color: Colors.grey.shade700),
+              ),
+              const SizedBox(height: 8),
+              if (counted.isEmpty)
+                const Text('Nothing counted since then.')
+              else
+                Flexible(
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: counted.length,
+                    itemBuilder: (_, i) {
+                      final t = counted[i];
+                      final credit = t.type == TransactionType.credit;
+                      return ListTile(
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(t.title),
+                        subtitle: Text(
+                          '${t.source} • ${_formatDateTime(t.date)}',
+                        ),
+                        trailing: Text(
+                          '${credit ? '+' : '-'}₹${t.amount.toStringAsFixed(2)}',
+                          style: TextStyle(
+                            color: credit
+                                ? Colors.green.shade800
+                                : Colors.red.shade800,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              const Divider(),
+              Text(
+                'Net change: ${net >= 0 ? '+' : '-'}'
+                '₹${net.abs().toStringAsFixed(2)}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _showAccountSheet(BankAccount account) async {
     final isSlice = isSliceSource(account.bank);
     final hasBalance = _accountBalances.containsKey(account.id);
@@ -519,6 +616,18 @@ class _AccountsScreenState extends State<AccountsScreen> {
                   _editAccountBalance(account);
                 },
               ),
+              if (hasBalance)
+                ListTile(
+                  leading: const Icon(Icons.receipt_long_outlined),
+                  title: const Text("See what's counted"),
+                  subtitle: const Text(
+                    'Transactions added on top of the balance you typed in',
+                  ),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showCountedTransactions(account);
+                  },
+                ),
               if (hasBalance)
                 ListTile(
                   leading: const Icon(Icons.backspace_outlined),
