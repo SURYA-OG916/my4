@@ -3,6 +3,13 @@ import 'models/transaction.dart';
 import 'utils/app_lock.dart';
 import 'utils/transfer_helper.dart';
 
+// Day 38: navy hero card, same palette as the Accounts screen. Income, Spent
+// and Balance sit on the gradient in soft light tones.
+const Color _navy = Color(0xFF1F2A44);
+const Color _navySoft = Color(0xFF3B4A6B);
+const Color _incomeLight = Color(0xFFA8D5B8);
+const Color _spentLight = Color(0xFFFFB4A2);
+
 class SummaryHeader extends StatelessWidget {
   final List<Transaction> transactions;
 
@@ -53,42 +60,72 @@ class SummaryHeader extends StatelessWidget {
     final double? balance = bankBalance;
 
     return Container(
-      padding: const EdgeInsets.all(16),
-      margin: const EdgeInsets.all(12),
+      padding: const EdgeInsets.fromLTRB(10, 14, 10, 14),
+      margin: const EdgeInsets.fromLTRB(14, 6, 14, 6),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(22),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [_navy, _navySoft],
+        ),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.05),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
+            color: _navy.withValues(alpha: 0.25),
+            blurRadius: 16,
+            offset: const Offset(0, 6),
           ),
         ],
       ),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          _buildColumn(
-            'Income',
-            totalCredit,
-            Colors.green,
-            onTap: onIncomeTap,
-            selected: incomeSelected,
+          Expanded(
+            child: _buildColumn(
+              'Income',
+              totalCredit,
+              _incomeLight,
+              onTap: onIncomeTap,
+              selected: incomeSelected,
+            ),
           ),
-          _buildColumn(
-            'Spent',
-            totalDebit,
-            Colors.red,
-            onTap: onSpentTap,
-            selected: spentSelected,
+          Expanded(
+            child: _buildColumn(
+              'Spent',
+              totalDebit,
+              _spentLight,
+              onTap: onSpentTap,
+              selected: spentSelected,
+            ),
           ),
-          if (balance != null)
-            _buildLockedBalanceColumn(
-                balanceLabel, balance, balance >= 0 ? Colors.green : Colors.red)
-          else
-            _buildColumn('Net', net, net >= 0 ? Colors.green : Colors.red),
+          Expanded(
+            child: balance != null
+                ? _buildLockedBalanceColumn(
+                    balanceLabel,
+                    balance,
+                    balance >= 0 ? Colors.white : _spentLight,
+                  )
+                : _buildColumn(
+                    'Net',
+                    net,
+                    net >= 0 ? _incomeLight : _spentLight,
+                  ),
+          ),
         ],
+      ),
+    );
+  }
+
+  Widget _amountText(String text, Color color) {
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: Alignment.centerLeft,
+      child: Text(
+        text,
+        style: TextStyle(
+          color: color,
+          fontWeight: FontWeight.w700,
+          fontSize: 16.5,
+        ),
       ),
     );
   }
@@ -103,27 +140,33 @@ class SummaryHeader extends StatelessWidget {
     final content = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 13)),
-        const SizedBox(height: 4),
         Text(
-          '₹${value.toStringAsFixed(2)}',
-          style: TextStyle(
-              color: color, fontWeight: FontWeight.bold, fontSize: 16),
+          label,
+          style: const TextStyle(color: Colors.white70, fontSize: 12.5),
         ),
+        const SizedBox(height: 4),
+        _amountText('₹${value.toStringAsFixed(2)}', color),
       ],
     );
 
     // Not a filter shortcut (for example "Net"): plain, as before.
-    if (onTap == null) return content;
+    if (onTap == null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: content,
+      );
+    }
 
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: BorderRadius.circular(14),
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
         decoration: BoxDecoration(
-          color: selected ? color.withValues(alpha: 0.10) : Colors.transparent,
-          borderRadius: BorderRadius.circular(10),
+          color: selected
+              ? Colors.white.withValues(alpha: 0.16)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
         ),
         child: content,
       ),
@@ -137,6 +180,7 @@ class SummaryHeader extends StatelessWidget {
       valueListenable: AppLock.instance.balancesVisible,
       builder: (context, visible, _) {
         return InkWell(
+          borderRadius: BorderRadius.circular(14),
           onTap: () {
             if (visible) {
               AppLock.instance.hideBalances();
@@ -144,32 +188,38 @@ class SummaryHeader extends StatelessWidget {
               AppLock.instance.revealBalances();
             }
           },
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(label,
-                      style: const TextStyle(color: Colors.grey, fontSize: 13)),
-                  const SizedBox(width: 4),
-                  Icon(
-                    visible ? Icons.visibility_off : Icons.visibility,
-                    size: 14,
-                    color: Colors.grey,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                visible ? '₹${value.toStringAsFixed(2)}' : '₹ ••••••',
-                style: TextStyle(
-                  color: visible ? color : Colors.grey,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 16,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      label,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12.5,
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    Icon(
+                      visible
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                      size: 14,
+                      color: Colors.white70,
+                    ),
+                  ],
                 ),
-              ),
-            ],
+                const SizedBox(height: 4),
+                _amountText(
+                  visible ? '₹${value.toStringAsFixed(2)}' : '₹ ••••••',
+                  visible ? color : Colors.white54,
+                ),
+              ],
+            ),
           ),
         );
       },

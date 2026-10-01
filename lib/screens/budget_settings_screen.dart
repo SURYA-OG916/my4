@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
 import '../models/budget.dart';
 import '../db/database_helper.dart';
+import '../utils/category_colors.dart';
+
+// Day 38: same navy palette as the rest of the app.
+const Color _navy = Color(0xFF1F2A44);
+const Color _accent = Color(0xFF6B8CAE);
 
 class BudgetSettingsScreen extends StatefulWidget {
   final List<String> categories;
@@ -72,6 +77,7 @@ class _BudgetSettingsScreenState extends State<BudgetSettingsScreen> {
     await DatabaseHelper.instance.setBudget(
       Budget(category: category, limit: value),
     );
+    if (!mounted) return;
     setState(() {
       _budgets[category] = value;
     });
@@ -93,52 +99,118 @@ class _BudgetSettingsScreenState extends State<BudgetSettingsScreen> {
 
     return Scaffold(
       appBar: AppBar(
+        centerTitle: false,
         title: const Text('Monthly Budgets'),
       ),
       body: categoryList.isEmpty
           ? const Center(child: Text('No categories yet'))
           : ListView.builder(
-              padding: const EdgeInsets.all(16),
-              itemCount: categoryList.length,
+              padding: const EdgeInsets.fromLTRB(14, 4, 14, 24),
+              itemCount: categoryList.length + 1,
               itemBuilder: (context, index) {
-                final category = categoryList[index];
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        flex: 2,
-                        child: Text(
-                          category,
-                          style: const TextStyle(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
+                if (index == 0) {
+                  return Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
+                    child: Text(
+                      'Set a monthly limit for a category and tap the tick '
+                      'to save. Leave a box empty and tap the tick to remove '
+                      'its budget.',
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 12.5,
+                        height: 1.35,
                       ),
-                      Expanded(
-                        flex: 3,
-                        child: TextField(
-                          controller: _controllers[category],
-                          keyboardType: TextInputType.number,
-                          decoration: const InputDecoration(
-                            prefixText: '₹ ',
-                            hintText: 'No limit set',
-                            isDense: true,
-                            border: OutlineInputBorder(),
-                          ),
-                          onSubmitted: (_) => _saveBudget(category),
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.check, color: Colors.green),
-                        onPressed: () => _saveBudget(category),
-                      ),
-                    ],
-                  ),
-                );
+                    ),
+                  );
+                }
+
+                final category = categoryList[index - 1];
+                return _buildCategoryRow(category);
               },
             ),
+    );
+  }
+
+  Widget _buildCategoryRow(String category) {
+    final scheme = Theme.of(context).colorScheme;
+    final hasBudget = _budgets.containsKey(category);
+    final initial = category.isEmpty ? '?' : category[0].toUpperCase();
+
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 10),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(color: scheme.outlineVariant.withOpacity(0.6)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 6, 10),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: categorySoftColor(category),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                initial,
+                style: TextStyle(
+                  color: categoryLabelColor(category),
+                  fontWeight: FontWeight.w700,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                category,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            SizedBox(
+              width: 128,
+              child: TextField(
+                controller: _controllers[category],
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  prefixText: '₹ ',
+                  hintText: 'No limit',
+                  isDense: true,
+                  filled: true,
+                  fillColor: _accent.withOpacity(0.08),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: _navy, width: 1.4),
+                  ),
+                ),
+                onSubmitted: (_) => _saveBudget(category),
+              ),
+            ),
+            IconButton(
+              icon: Icon(
+                Icons.check_circle,
+                color: hasBudget ? const Color(0xFF5A8F6E) : Colors.grey.shade400,
+              ),
+              tooltip: 'Save',
+              onPressed: () => _saveBudget(category),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

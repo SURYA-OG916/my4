@@ -3,9 +3,15 @@ import '../db/database_helper.dart';
 import '../models/bank_account.dart';
 import '../models/transaction.dart';
 import '../utils/account_balance.dart';
+import '../utils/category_colors.dart';
 import '../utils/category_matcher.dart';
 import '../utils/slice_balance.dart';
 import '../utils/transfer_helper.dart';
+
+// Day 38: same navy palette as the rest of the app.
+const Color _navy = Color(0xFF1F2A44);
+const Color _accent = Color(0xFF6B8CAE);
+const Color _amber = Color(0xFFC9A227);
 
 class AddTransactionScreen extends StatefulWidget {
   final List<String> existingCategories;
@@ -263,16 +269,61 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     Navigator.pop(context, newTransaction);
   }
 
+  // ------------------------------------------------------------------ layout
+
+  InputDecoration _decoration({
+    required String label,
+    String? hint,
+    String? helper,
+    String? prefixText,
+  }) {
+    return InputDecoration(
+      labelText: label,
+      hintText: hint,
+      helperText: helper,
+      prefixText: prefixText,
+      filled: true,
+      fillColor: Colors.white,
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: Colors.grey.shade300),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: BorderSide(color: Colors.grey.shade300),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: const BorderSide(color: _navy, width: 1.6),
+      ),
+    );
+  }
+
+  Widget _sectionLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 22, 4, 10),
+      child: Text(
+        text.toUpperCase(),
+        style: TextStyle(
+          color: Colors.grey.shade600,
+          fontSize: 11.5,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.2,
+        ),
+      ),
+    );
+  }
+
   Widget _buildAccountPicker() {
     if (!_accountsLoaded) return const SizedBox.shrink();
 
     return Padding(
-      padding: const EdgeInsets.only(top: 16),
+      padding: const EdgeInsets.only(top: 14),
       child: DropdownButtonFormField<String>(
         value: _selectedAccountId ?? _noAccountValue,
-        decoration: const InputDecoration(
-          labelText: 'Account (optional)',
-          helperText: 'Which bank account this went through',
+        decoration: _decoration(
+          label: 'Account (optional)',
+          helper: 'Which bank account this went through',
         ),
         items: [
           const DropdownMenuItem(
@@ -295,6 +346,53 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
     );
   }
 
+  Widget _dateTimeTile({
+    required String label,
+    required String value,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return Material(
+      color: _accent.withOpacity(0.08),
+      borderRadius: BorderRadius.circular(14),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              Icon(icon, size: 20, color: _navy),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 12,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      value,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w600,
+                        fontSize: 15,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final realCategories =
@@ -302,6 +400,7 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
 
     return Scaffold(
       appBar: AppBar(
+        centerTitle: false,
         title: Text(
           _isEditing
               ? 'Edit Transaction'
@@ -310,153 +409,215 @@ class _AddTransactionScreenState extends State<AddTransactionScreen> {
                   : 'Add Transaction'),
         ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Form(
-          key: _formKey,
-          child: ListView(
-            children: [
-              TextFormField(
-                controller: _titleController,
-                decoration: const InputDecoration(labelText: 'Title'),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Please enter a title';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _sourceController,
-                decoration: const InputDecoration(
-                  labelText: 'Source',
-                  hintText: 'e.g. GPay, Cash, HDFC Bank',
+      body: Form(
+        key: _formKey,
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 28),
+          children: [
+            if (widget.isDraft)
+              Container(
+                margin: const EdgeInsets.only(bottom: 12),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: _amber.withOpacity(0.15),
+                  borderRadius: BorderRadius.circular(12),
                 ),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Please enter a source';
-                  }
-                  return null;
-                },
-              ),
-              _buildAccountPicker(),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: _amountController,
-                decoration: const InputDecoration(
-                  labelText: 'Amount',
-                  prefixText: '₹',
-                ),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                validator: (value) {
-                  if (value == null || value.trim().isEmpty) {
-                    return 'Please enter an amount';
-                  }
-                  final parsed = double.tryParse(value.trim());
-                  if (parsed == null || parsed <= 0) {
-                    return 'Enter a valid amount greater than 0';
-                  }
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              DropdownButtonFormField<String>(
-                value: _selectedCategory,
-                decoration: const InputDecoration(labelText: 'Category'),
-                items: [
-                  ...realCategories.map(
-                    (category) => DropdownMenuItem(
-                      value: category,
-                      child: Text(category),
+                child: const Row(
+                  children: [
+                    Icon(Icons.info_outline, size: 18, color: Color(0xFF8A6D0B)),
+                    SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Prefilled from an SMS. Check the details before saving.',
+                        style: TextStyle(
+                          color: Color(0xFF8A6D0B),
+                          fontSize: 12.5,
+                        ),
+                      ),
                     ),
+                  ],
+                ),
+              ),
+
+            // Debit / Credit
+            SizedBox(
+              width: double.infinity,
+              child: SegmentedButton<TransactionType>(
+                showSelectedIcon: false,
+                style: SegmentedButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: Colors.grey.shade700,
+                  selectedBackgroundColor: _navy,
+                  selectedForegroundColor: Colors.white,
+                  side: BorderSide(color: Colors.grey.shade300),
+                  textStyle: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                segments: const [
+                  ButtonSegment(
+                    value: TransactionType.debit,
+                    label: Text('Debit'),
+                    icon: Icon(Icons.arrow_upward),
                   ),
-                  const DropdownMenuItem(
-                    value: _otherOptionValue,
-                    child: Text('Other (type new category)'),
+                  ButtonSegment(
+                    value: TransactionType.credit,
+                    label: Text('Credit'),
+                    icon: Icon(Icons.arrow_downward),
                   ),
                 ],
-                onChanged: (value) {
+                selected: {_selectedType},
+                onSelectionChanged: (selection) {
                   setState(() {
-                    _selectedCategory = value;
-                    _categoryTouchedByUser = true;
+                    _selectedType = selection.first;
                   });
                 },
-                validator: (value) =>
-                    value == null ? 'Please select a category' : null,
               ),
-              if (_selectedCategory == _otherOptionValue) ...[
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: _customCategoryController,
-                  decoration: const InputDecoration(
-                    labelText: 'New category name',
+            ),
+            const SizedBox(height: 16),
+
+            // Amount
+            TextFormField(
+              controller: _amountController,
+              style: const TextStyle(fontSize: 24, fontWeight: FontWeight.w700),
+              decoration: _decoration(label: 'Amount', prefixText: '₹ '),
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Please enter an amount';
+                }
+                final parsed = double.tryParse(value.trim());
+                if (parsed == null || parsed <= 0) {
+                  return 'Enter a valid amount greater than 0';
+                }
+                return null;
+              },
+            ),
+
+            _sectionLabel('Details'),
+            TextFormField(
+              controller: _titleController,
+              decoration: _decoration(label: 'Title'),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Please enter a title';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 14),
+            TextFormField(
+              controller: _sourceController,
+              decoration: _decoration(
+                label: 'Source',
+                hint: 'e.g. GPay, Cash, HDFC Bank',
+              ),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Please enter a source';
+                }
+                return null;
+              },
+            ),
+            _buildAccountPicker(),
+            const SizedBox(height: 14),
+            DropdownButtonFormField<String>(
+              value: _selectedCategory,
+              decoration: _decoration(label: 'Category'),
+              items: [
+                ...realCategories.map(
+                  (category) => DropdownMenuItem(
+                    value: category,
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 10,
+                          height: 10,
+                          decoration: BoxDecoration(
+                            color: categoryColor(category),
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Text(category),
+                      ],
+                    ),
                   ),
-                  validator: (value) {
-                    if (_selectedCategory != _otherOptionValue) return null;
-                    if (value == null || value.trim().isEmpty) {
-                      return 'Please enter a category name';
-                    }
-                    return null;
-                  },
+                ),
+                const DropdownMenuItem(
+                  value: _otherOptionValue,
+                  child: Text('Other (type new category)'),
                 ),
               ],
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: RadioListTile<TransactionType>(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Debit'),
-                      value: TransactionType.debit,
-                      groupValue: _selectedType,
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedType = value!;
-                        });
-                      },
-                    ),
+              onChanged: (value) {
+                setState(() {
+                  _selectedCategory = value;
+                  _categoryTouchedByUser = true;
+                });
+              },
+              validator: (value) =>
+                  value == null ? 'Please select a category' : null,
+            ),
+            if (_selectedCategory == _otherOptionValue) ...[
+              const SizedBox(height: 14),
+              TextFormField(
+                controller: _customCategoryController,
+                decoration: _decoration(label: 'New category name'),
+                validator: (value) {
+                  if (_selectedCategory != _otherOptionValue) return null;
+                  if (value == null || value.trim().isEmpty) {
+                    return 'Please enter a category name';
+                  }
+                  return null;
+                },
+              ),
+            ],
+
+            _sectionLabel('When'),
+            Row(
+              children: [
+                Expanded(
+                  child: _dateTimeTile(
+                    label: 'Date',
+                    value: _formatDate(_selectedDate),
+                    icon: Icons.calendar_today_outlined,
+                    onTap: _pickDate,
                   ),
-                  Expanded(
-                    child: RadioListTile<TransactionType>(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Credit'),
-                      value: TransactionType.credit,
-                      groupValue: _selectedType,
-                      onChanged: (value) {
-                        setState(() {
-                          _selectedType = value!;
-                        });
-                      },
-                    ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _dateTimeTile(
+                    label: 'Time',
+                    value: _formatTime(_selectedDate),
+                    icon: Icons.access_time,
+                    onTap: _pickTime,
                   ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Date'),
-                subtitle: Text(_formatDate(_selectedDate)),
-                trailing: const Icon(Icons.calendar_today),
-                onTap: _pickDate,
-              ),
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Time'),
-                subtitle: Text(_formatTime(_selectedDate)),
-                trailing: const Icon(Icons.access_time),
-                onTap: _pickTime,
-              ),
-              const SizedBox(height: 24),
-              ElevatedButton(
+                ),
+              ],
+            ),
+
+            const SizedBox(height: 28),
+            SizedBox(
+              width: double.infinity,
+              child: FilledButton(
+                style: FilledButton.styleFrom(
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
                 onPressed: _submit,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(vertical: 12),
-                  child: Text(_isEditing ? 'Update Transaction' : 'Save Transaction'),
+                  child: Text(
+                    _isEditing ? 'Update Transaction' : 'Save Transaction',
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );

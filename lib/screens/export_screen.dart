@@ -5,6 +5,13 @@ import 'package:share_plus/share_plus.dart';
 import '../db/database_helper.dart';
 import '../models/transaction.dart';
 
+// Day 38: same navy palette as the rest of the app.
+const Color _navy = Color(0xFF1F2A44);
+const Color _navySoft = Color(0xFF3B4A6B);
+const Color _accent = Color(0xFF6B8CAE);
+const Color _good = Color(0xFF5A8F6E);
+const Color _bad = Color(0xFFB5654A);
+
 class ExportScreen extends StatefulWidget {
   const ExportScreen({super.key});
 
@@ -92,68 +99,194 @@ class _ExportScreenState extends State<ExportScreen> {
     }
   }
 
+  Widget _buildHero() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [_navy, _navySoft],
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: _navy.withOpacity(0.25),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 46,
+            height: 46,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.12),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Icon(Icons.ios_share, color: Colors.white),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Export your data',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 22,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Export all transactions to a CSV file, then choose where to '
+            'save or share it: Downloads, Drive, WhatsApp, and more.',
+            style: TextStyle(color: Colors.white70, fontSize: 13, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: const [
+              _ColumnChip('Date'),
+              _ColumnChip('Title'),
+              _ColumnChip('Source'),
+              _ColumnChip('Category'),
+              _ColumnChip('Type'),
+              _ColumnChip('Amount'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Export Data')),
-      body: Padding(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Export all transactions to a CSV file, then choose where to '
-              'save or share it — Downloads, Drive, WhatsApp, and more.',
-              style: TextStyle(fontSize: 14),
-            ),
-            const SizedBox(height: 24),
-            ElevatedButton.icon(
+      appBar: AppBar(
+        centerTitle: false,
+        title: const Text('Export Data'),
+      ),
+      body: ListView(
+        padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
+        children: [
+          _buildHero(),
+          const SizedBox(height: 16),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              style: FilledButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 16),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
+              ),
               onPressed: _exporting ? null : _exportCsv,
-              icon: const Icon(Icons.file_download),
-              label: Text(_exporting ? 'Exporting...' : 'Export to CSV'),
-            ),
-            const SizedBox(height: 24),
-            if (_resultPath != null)
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.green.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.green.withOpacity(0.4)),
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Text(
-                      'Export successful — choose where to save it',
-                      style: TextStyle(
-                        fontWeight: FontWeight.bold,
-                        color: Colors.green,
+              icon: _exporting
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    SelectableText(
-                      _resultPath!,
-                      style: const TextStyle(fontSize: 13, fontFamily: 'monospace'),
-                    ),
-                  ],
+                    )
+                  : const Icon(Icons.file_download_outlined),
+              label: Text(
+                _exporting ? 'Exporting...' : 'Export to CSV',
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-            if (_error != null)
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.red.withOpacity(0.1),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.red.withOpacity(0.4)),
-                ),
-                child: Text(
-                  'Export failed: $_error',
-                  style: const TextStyle(color: Colors.red),
-                ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          if (_resultPath != null)
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: _good.withOpacity(0.10),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: _good.withOpacity(0.35)),
               ),
-          ],
-        ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.check_circle, size: 20, color: _good),
+                      SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          'Export successful — choose where to save it',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            color: _good,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  SelectableText(
+                    _resultPath!,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontFamily: 'monospace',
+                      color: Colors.grey.shade800,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (_error != null)
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: _bad.withOpacity(0.10),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: _bad.withOpacity(0.35)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.error_outline, size: 20, color: _bad),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Export failed: $_error',
+                      style: const TextStyle(color: _bad),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ColumnChip extends StatelessWidget {
+  final String label;
+
+  const _ColumnChip(this.label);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: _accent.withOpacity(0.25),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(color: Colors.white, fontSize: 11.5),
       ),
     );
   }

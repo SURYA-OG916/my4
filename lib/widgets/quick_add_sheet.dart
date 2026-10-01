@@ -4,6 +4,10 @@ import '../models/bank_account.dart';
 import '../models/transaction.dart';
 import '../utils/slice_balance.dart';
 
+// Day 38: same navy palette as the rest of the app.
+const Color _navy = Color(0xFF1F2A44);
+const Color _accent = Color(0xFF6B8CAE);
+
 /// What the quick-add sheet collects. The caller turns it into a Transaction
 /// (category guessed) and runs the usual duplicate checks.
 ///
@@ -35,6 +39,9 @@ Future<QuickAddResult?> showQuickAddSheet(BuildContext context) {
     context: context,
     isScrollControlled: true,
     showDragHandle: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+    ),
     builder: (ctx) => const _QuickAddSheet(),
   );
 }
@@ -164,47 +171,86 @@ class _QuickAddSheetState extends State<_QuickAddSheet> {
     );
   }
 
+  OutlineInputBorder get _fieldBorder => OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+      );
+
   @override
   Widget build(BuildContext context) {
     return Padding(
       padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
       child: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          padding: const EdgeInsets.fromLTRB(18, 0, 18, 16),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Quick add',
-                style: Theme.of(context)
-                    .textTheme
-                    .titleLarge
-                    ?.copyWith(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'For a payment your apps never notified you about.',
-                style: TextStyle(color: Colors.grey.shade700),
-              ),
-              const SizedBox(height: 16),
-              SegmentedButton<TransactionType>(
-                segments: const [
-                  ButtonSegment(
-                    value: TransactionType.debit,
-                    label: Text('Sent'),
-                    icon: Icon(Icons.arrow_upward),
+              Row(
+                children: [
+                  Container(
+                    width: 38,
+                    height: 38,
+                    decoration: BoxDecoration(
+                      color: _accent.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: const Icon(Icons.bolt, color: _navy, size: 22),
                   ),
-                  ButtonSegment(
-                    value: TransactionType.credit,
-                    label: Text('Received'),
-                    icon: Icon(Icons.arrow_downward),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Quick add',
+                          style: Theme.of(context)
+                              .textTheme
+                              .titleLarge
+                              ?.copyWith(fontWeight: FontWeight.w700),
+                        ),
+                        Text(
+                          'For a payment your apps never notified you about.',
+                          style: TextStyle(
+                            color: Colors.grey.shade600,
+                            fontSize: 12.5,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
-                selected: {_type},
-                onSelectionChanged: (selection) {
-                  setState(() => _type = selection.first);
-                },
+              ),
+              const SizedBox(height: 18),
+              SizedBox(
+                width: double.infinity,
+                child: SegmentedButton<TransactionType>(
+                  showSelectedIcon: false,
+                  style: SegmentedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: Colors.grey.shade700,
+                    selectedBackgroundColor: _navy,
+                    selectedForegroundColor: Colors.white,
+                    side: BorderSide(color: Colors.grey.shade300),
+                    textStyle: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  segments: const [
+                    ButtonSegment(
+                      value: TransactionType.debit,
+                      label: Text('Sent'),
+                      icon: Icon(Icons.arrow_upward),
+                    ),
+                    ButtonSegment(
+                      value: TransactionType.credit,
+                      label: Text('Received'),
+                      icon: Icon(Icons.arrow_downward),
+                    ),
+                  ],
+                  selected: {_type},
+                  onSelectionChanged: (selection) {
+                    setState(() => _type = selection.first);
+                  },
+                ),
               ),
               const SizedBox(height: 16),
               TextField(
@@ -212,11 +258,15 @@ class _QuickAddSheetState extends State<_QuickAddSheet> {
                 autofocus: true,
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
+                style: const TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700,
+                ),
                 decoration: InputDecoration(
                   labelText: 'Amount',
                   prefixText: '₹ ',
                   errorText: _amountError,
-                  border: const OutlineInputBorder(),
+                  border: _fieldBorder,
                 ),
                 onChanged: (_) {
                   if (_amountError != null) {
@@ -232,29 +282,41 @@ class _QuickAddSheetState extends State<_QuickAddSheet> {
                   labelText: _type == TransactionType.debit
                       ? 'Paid to (optional)'
                       : 'Received from (optional)',
-                  border: const OutlineInputBorder(),
+                  border: _fieldBorder,
                 ),
                 onSubmitted: (_) => _save(),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(height: 14),
               Wrap(
                 spacing: 8,
+                runSpacing: 4,
                 children: [
                   for (final source in _sources)
                     ChoiceChip(
                       label: Text(source),
                       selected: _source == source,
+                      showCheckmark: false,
+                      selectedColor: _navy,
+                      backgroundColor: _accent.withValues(alpha: 0.12),
+                      side: BorderSide.none,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      labelStyle: TextStyle(
+                        color: _source == source ? Colors.white : _navy,
+                        fontWeight: FontWeight.w600,
+                      ),
                       onSelected: (_) => setState(() => _source = source),
                     ),
                 ],
               ),
               if (_accounts.isNotEmpty) ...[
-                const SizedBox(height: 12),
+                const SizedBox(height: 14),
                 DropdownButtonFormField<String>(
                   value: _selectedAccountId ?? _noAccountValue,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Account (optional)',
-                    border: OutlineInputBorder(),
+                    border: _fieldBorder,
                   ),
                   items: [
                     const DropdownMenuItem(
@@ -273,26 +335,79 @@ class _QuickAddSheetState extends State<_QuickAddSheet> {
                   },
                 ),
               ],
-              const SizedBox(height: 12),
-              // Day 36: was a fixed "today's date and time" note; now an
-              // editable field, since a Quick Add is often entered after
-              // the fact and needs its own real time, not the moment of
-              // typing.
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('When'),
-                subtitle: Text(_formatDateTime(_dateTime)),
-                trailing: const Icon(Icons.calendar_today),
-                onTap: _pickDateTime,
+              const SizedBox(height: 14),
+              // Day 36: an editable "When" field, since a Quick Add is often
+              // entered after the fact and needs its own real time.
+              Material(
+                color: _accent.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(14),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(14),
+                  onTap: _pickDateTime,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 12,
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(
+                          Icons.calendar_today_outlined,
+                          size: 20,
+                          color: _navy,
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                'When',
+                                style: TextStyle(
+                                  color: Colors.grey.shade600,
+                                  fontSize: 12,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                _formatDateTime(_dateTime),
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 15,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Icon(
+                          Icons.edit_outlined,
+                          size: 18,
+                          color: Colors.grey.shade600,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 16),
               SizedBox(
                 width: double.infinity,
                 child: FilledButton(
+                  style: FilledButton.styleFrom(
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
                   onPressed: _save,
                   child: const Padding(
                     padding: EdgeInsets.symmetric(vertical: 12),
-                    child: Text('Save'),
+                    child: Text(
+                      'Save',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
                   ),
                 ),
               ),

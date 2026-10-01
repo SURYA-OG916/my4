@@ -19,6 +19,14 @@ String _formatDate(DateTime d) => '${_two(d.day)}/${_two(d.month)}/${d.year}';
 String _formatDateTime(DateTime d) =>
     '${_formatDate(d)} ${_two(d.hour)}:${_two(d.minute)}';
 
+// Day 38: palette for this screen. Deep navy hero card with soft, quiet
+// section cards, matching the muted tones in category_colors.dart.
+const Color _heroStart = Color(0xFF1F2A44);
+const Color _heroEnd = Color(0xFF3B4A6B);
+const Color _accent = Color(0xFF6B8CAE);
+const Color _positive = Color(0xFF5A8F6E);
+const Color _negative = Color(0xFFB5654A);
+
 class AccountsScreen extends StatefulWidget {
   const AccountsScreen({super.key});
 
@@ -193,78 +201,169 @@ class _AccountsScreenState extends State<AccountsScreen> {
     await _load();
   }
 
+  // Day 38: hero card. Big total on a deep navy gradient, with the bank and
+  // Slice parts shown underneath instead of a paragraph of explanation.
   Widget _buildBalanceCard() {
     final snapshot = _snapshot;
 
     if (snapshot == null) {
-      return _section(
-        title: 'Bank balance',
-        subtitle:
-            "Not set. MY4 can't read your bank balance, so enter it once and "
-            'it will keep it up to date from your transactions.',
-        child: Align(
-          alignment: Alignment.centerLeft,
-          child: FilledButton(
-            onPressed: _editBalance,
-            child: const Text('Set balance'),
-          ),
+      return _heroShell(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Bank balance',
+              style: TextStyle(color: Colors.white70, fontSize: 13),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Not set yet',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 26,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              "MY4 can't read your bank balance. Enter it once and it keeps "
+              'itself up to date from your transactions.',
+              style: TextStyle(color: Colors.white70, fontSize: 12.5),
+            ),
+            const SizedBox(height: 16),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Colors.white,
+                foregroundColor: _heroStart,
+              ),
+              onPressed: _editBalance,
+              child: const Text('Set balance'),
+            ),
+          ],
         ),
       );
     }
 
     final current = BalanceHelper.currentBalance(snapshot, _transactions);
     final slice = _sliceBalance;
+    final total = current + (slice?.amount ?? 0);
 
-    return _section(
-      title: 'Bank balance',
+    return _heroShell(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '₹${current.toStringAsFixed(2)}',
-            style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                  color:
-                      current >= 0 ? Colors.green.shade800 : Colors.red.shade800,
-                ),
+            slice != null ? 'Total balance' : 'Bank balance',
+            style: const TextStyle(color: Colors.white70, fontSize: 13),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 6),
+          Text(
+            '₹${total.toStringAsFixed(2)}',
+            style: TextStyle(
+              color: total >= 0 ? Colors.white : const Color(0xFFFFB4A2),
+              fontSize: 34,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.5,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Row(
+            children: [
+              Expanded(
+                child: _heroStat(
+                  'Banks',
+                  '₹${current.toStringAsFixed(2)}',
+                ),
+              ),
+              if (slice != null) ...[
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _heroStat(
+                    'Slice',
+                    '₹${slice.amount.toStringAsFixed(2)}',
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 14),
           Text(
             'You set ₹${snapshot.amount.toStringAsFixed(2)} on '
-            '${_formatDateTime(snapshot.asOf)}. Income and spending recorded '
-            'after that are added or subtracted automatically; transfers '
-            'between your own accounts are ignored.',
-            style: TextStyle(color: Colors.grey.shade700),
+            '${_formatDateTime(snapshot.asOf)}. Later income and spending are '
+            'added automatically; own-account transfers are ignored. Payments '
+            "MY4 can't see (small SBI debits with no SMS) are not included.",
+            style: const TextStyle(color: Colors.white60, fontSize: 11.5),
           ),
-          if (slice != null) ...[
-            const SizedBox(height: 4),
-            Text(
-              'The balance on the main screen is this plus your Slice balance '
-              '(₹${slice.amount.toStringAsFixed(2)}): '
-              '₹${(current + slice.amount).toStringAsFixed(2)} in total.',
-              style: TextStyle(color: Colors.grey.shade700),
-            ),
-          ],
-          const SizedBox(height: 4),
-          Text(
-            "Payments MY4 can't see (for example small SBI debits with no SMS) "
-            'are not included, so update this now and then.',
-            style: TextStyle(color: Colors.grey.shade700),
-          ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
               TextButton(
+                style: TextButton.styleFrom(foregroundColor: Colors.white70),
                 onPressed: _clearBalance,
                 child: const Text('Clear'),
               ),
               const SizedBox(width: 8),
               FilledButton(
+                style: FilledButton.styleFrom(
+                  backgroundColor: Colors.white,
+                  foregroundColor: _heroStart,
+                ),
                 onPressed: _editBalance,
                 child: const Text('Update balance'),
               ),
             ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _heroShell({required Widget child}) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 16),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [_heroStart, _heroEnd],
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: _heroStart.withOpacity(0.25),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: child,
+    );
+  }
+
+  Widget _heroStat(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(color: Colors.white70, fontSize: 11.5),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 15,
+              fontWeight: FontWeight.w600,
+            ),
           ),
         ],
       ),
@@ -550,9 +649,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                         trailing: Text(
                           '${credit ? '+' : '-'}₹${t.amount.toStringAsFixed(2)}',
                           style: TextStyle(
-                            color: credit
-                                ? Colors.green.shade800
-                                : Colors.red.shade800,
+                            color: credit ? _positive : _negative,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -585,6 +682,10 @@ class _AccountsScreenState extends State<AccountsScreen> {
 
     await showModalBottomSheet<void>(
       context: context,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (ctx) => SafeArea(
         child: Wrap(
           children: [
@@ -686,11 +787,10 @@ class _AccountsScreenState extends State<AccountsScreen> {
 
   Widget _buildAccountsCard() {
     return _section(
+      icon: Icons.account_balance_outlined,
       title: 'Bank accounts',
-      subtitle:
-          'Each bank shows its own balance, hidden until you unlock it with '
-          'the eye icon. Tap a bank to set its balance. Slice also updates '
-          'itself from Slice messages.',
+      subtitle: 'Tap a bank to set its balance. Balances stay hidden until '
+          'you unlock them with the eye icon.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -700,6 +800,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
               style: TextStyle(color: Colors.grey.shade700),
             ),
           for (final account in _accounts) _buildAccountTile(account),
+          const SizedBox(height: 4),
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton.icon(
@@ -759,57 +860,95 @@ class _AccountsScreenState extends State<AccountsScreen> {
         ? _accounts
         : _accounts.where((a) => !isSliceSource(a.bank)).toList();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.phone_android),
-          title: Text(label),
-          subtitle: Text(
-            lastSeen != null
-                ? 'Last payment notification: ${_formatDateTime(lastSeen)}'
-                : 'No payment notifications captured yet',
-          ),
+    final initial = label.trim().isEmpty ? '?' : label.trim()[0].toUpperCase();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: _accent.withOpacity(0.06),
+          borderRadius: BorderRadius.circular(16),
         ),
-        if (linkable.isEmpty)
-          Padding(
-            padding: const EdgeInsets.only(left: 4, bottom: 8),
-            child: Text(
-              'Add a bank account above to link it to this app.',
-              style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
-            ),
-          )
-        else
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Wrap(
-              spacing: 8,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                for (final account in linkable)
-                  FilterChip(
-                    label: Text(account.label),
-                    selected: keys.any(
-                      (key) => _links[key]?.contains(account.id) ?? false,
+                CircleAvatar(
+                  radius: 18,
+                  backgroundColor: _accent.withOpacity(0.18),
+                  child: Text(
+                    initial,
+                    style: const TextStyle(
+                      color: _heroEnd,
+                      fontWeight: FontWeight.w700,
                     ),
-                    onSelected: (selected) =>
-                        _toggleLink(keys, account.id, selected),
                   ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        label,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 15,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        lastSeen != null
+                            ? 'Last notification ${_formatDateTime(lastSeen)}'
+                            : 'No notifications captured yet',
+                        style: TextStyle(
+                          color: Colors.grey.shade600,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               ],
             ),
-          ),
-      ],
+            const SizedBox(height: 8),
+            if (linkable.isEmpty)
+              Text(
+                'Add a bank account above to link it to this app.',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+              )
+            else
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: [
+                  for (final account in linkable)
+                    FilterChip(
+                      label: Text(account.label),
+                      visualDensity: VisualDensity.compact,
+                      selected: keys.any(
+                        (key) => _links[key]?.contains(account.id) ?? false,
+                      ),
+                      onSelected: (selected) =>
+                          _toggleLink(keys, account.id, selected),
+                    ),
+                ],
+              ),
+          ],
+        ),
+      ),
     );
   }
 
   Widget _buildAppsCard() {
     return _section(
+      icon: Icons.phone_android_outlined,
       title: 'UPI apps',
-      subtitle:
-          'Payment apps MY4 listens to, and which of your accounts each one '
-          'uses. If an app is linked to exactly one account, its payments are '
-          'tagged with that account. The Slice account is only used by the '
-          'Slice app.',
+      subtitle: 'Apps MY4 listens to. Link an app to exactly one account and '
+          'its payments are tagged with that account. The Slice account is '
+          'only used by the Slice app.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -953,9 +1092,9 @@ class _AccountsScreenState extends State<AccountsScreen> {
 
   Widget _buildNamesCard() {
     return _section(
+      icon: Icons.badge_outlined,
       title: 'My names',
-      subtitle:
-          'Payments to or from these names are treated as transfers between '
+      subtitle: 'Payments to or from these names count as transfers between '
           'your own accounts, not income or spending.',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -973,10 +1112,13 @@ class _AccountsScreenState extends State<AccountsScreen> {
                 for (final name in _myNames)
                   Chip(
                     label: Text(name),
+                    backgroundColor: _accent.withOpacity(0.12),
+                    side: BorderSide.none,
                     onDeleted: () => _deleteName(name),
                   ),
               ],
             ),
+          const SizedBox(height: 4),
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton.icon(
@@ -1109,13 +1251,12 @@ class _AccountsScreenState extends State<AccountsScreen> {
   Widget _buildFillAccountsCard() {
     final count = _missingAccountCandidates.length;
     return _section(
+      icon: Icons.link,
       title: 'Fill in missing accounts',
       subtitle: count == 0
-          ? "Every transaction that can be matched to a single-account app "
-              "already has one. A transaction whose bank is shared by more "
-              "than one account (for example a plain \"SBI\" entry) can't be "
-              "filled in automatically — edit it and pick the account by "
-              "hand."
+          ? "Everything that can be matched already has an account. A plain "
+              "\"SBI\" entry shared by more than one account can't be filled "
+              "in automatically; edit it and pick the account by hand."
           : '$count transaction${count == 1 ? '' : 's'} can be matched to '
               'the one account their app is linked to.',
       child: Align(
@@ -1212,6 +1353,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
   Widget _buildCleanupCard() {
     final count = _cleanupCandidates.length;
     return _section(
+      icon: Icons.cleaning_services_outlined,
       title: 'Clean up old imports',
       subtitle: count == 0
           ? 'No leftover promo or Slice-mistagged transactions detected.'
@@ -1231,30 +1373,75 @@ class _AccountsScreenState extends State<AccountsScreen> {
 
   // ------------------------------------------------------------------ layout
 
+  Widget _sectionLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(6, 8, 6, 8),
+      child: Text(
+        text.toUpperCase(),
+        style: TextStyle(
+          color: Colors.grey.shade600,
+          fontSize: 11.5,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.2,
+        ),
+      ),
+    );
+  }
+
   Widget _section({
+    required IconData icon,
     required String title,
     String? subtitle,
     required Widget child,
   }) {
+    final scheme = Theme.of(context).colorScheme;
     return Card(
-      margin: const EdgeInsets.only(bottom: 12),
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 14),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+        side: BorderSide(color: scheme.outlineVariant.withOpacity(0.6)),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              title,
-              style: Theme.of(context)
-                  .textTheme
-                  .titleMedium
-                  ?.copyWith(fontWeight: FontWeight.bold),
+            Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: _accent.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(icon, size: 19, color: _heroEnd),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context)
+                        .textTheme
+                        .titleMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ),
+              ],
             ),
             if (subtitle != null) ...[
-              const SizedBox(height: 4),
-              Text(subtitle, style: TextStyle(color: Colors.grey.shade700)),
+              const SizedBox(height: 8),
+              Text(
+                subtitle,
+                style: TextStyle(
+                  color: Colors.grey.shade600,
+                  fontSize: 12.5,
+                  height: 1.35,
+                ),
+              ),
             ],
-            const SizedBox(height: 12),
+            const SizedBox(height: 14),
             child,
           ],
         ),
@@ -1265,15 +1452,19 @@ class _AccountsScreenState extends State<AccountsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Accounts & balance')),
+      appBar: AppBar(
+        title: const Text('Accounts & balance'),
+        centerTitle: false,
+      ),
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
               children: [
                 if (_error != null)
                   Card(
                     color: Colors.red.shade50,
+                    elevation: 0,
                     child: Padding(
                       padding: const EdgeInsets.all(12),
                       child: Text(
@@ -1286,6 +1477,7 @@ class _AccountsScreenState extends State<AccountsScreen> {
                 _buildAccountsCard(),
                 _buildAppsCard(),
                 _buildNamesCard(),
+                _sectionLabel('Tools'),
                 _buildFillAccountsCard(),
                 _buildCleanupCard(),
               ],

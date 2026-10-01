@@ -26,6 +26,14 @@ import 'widgets/lock_gate.dart';
 import 'widgets/month_selector.dart';
 import 'widgets/quick_add_sheet.dart';
 
+// Day 38: app-wide palette, shared with the Accounts screen.
+const Color _navy = Color(0xFF1F2A44);
+const Color _navySoft = Color(0xFF3B4A6B);
+const Color _accent = Color(0xFF6B8CAE);
+const Color _debitColor = Color(0xFFB5654A);
+const Color _creditColor = Color(0xFF5A8F6E);
+const Color _transferColor = Color(0xFF9E9E9E);
+
 void main() {
   runApp(const MyApp());
 }
@@ -41,14 +49,17 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'MY4',
-      // Day 35: a quiet, elegant Material theme — flat surfaces, a single
-      // deep-charcoal seed color instead of stock Material blue, so the
-      // new category palette does the visual talking.
+      // Day 35: a quiet, elegant Material theme. Day 38: the seed and primary
+      // are now the deep navy used on the Accounts screen, so buttons, chips
+      // and floating buttons stop coming out stock blue/cyan.
       theme: ThemeData(
         useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF3D3D3D),
+          seedColor: _navySoft,
           brightness: Brightness.light,
+        ).copyWith(
+          primary: _navy,
+          onPrimary: Colors.white,
         ),
         scaffoldBackgroundColor: const Color(0xFFFAFAF8),
         appBarTheme: const AppBarTheme(
@@ -65,6 +76,23 @@ class MyApp extends StatelessWidget {
         ),
         listTileTheme: const ListTileThemeData(
           iconColor: Color(0xFF5C5C5C),
+        ),
+        floatingActionButtonTheme: FloatingActionButtonThemeData(
+          backgroundColor: _navy,
+          foregroundColor: Colors.white,
+          elevation: 3,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+          ),
+        ),
+        snackBarTheme: SnackBarThemeData(
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: _navy,
+          contentTextStyle: const TextStyle(color: Colors.white),
+          actionTextColor: const Color(0xFFBFD3EA),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
         ),
       ),
       // Day 27: LockGate sits above the Navigator so it also covers every
@@ -373,11 +401,41 @@ class _TransactionListScreenState extends State<TransactionListScreen>
     });
   }
 
+  // Day 38: the tap-to-open-detail logic, shared by the whole row.
+  Future<void> _openTransactionDetail(
+    Transaction txn,
+    List<String> categories,
+  ) async {
+    final updated = await Navigator.push<Transaction>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => TransactionDetailScreen(
+          transaction: txn,
+          existingCategories: categories,
+        ),
+      ),
+    );
+
+    if (updated != null) {
+      await DatabaseHelper.instance.updateTransaction(updated);
+      setState(() {
+        final index = transactions.indexWhere((t) => t.id == updated.id);
+        if (index != -1) {
+          transactions[index] = updated;
+        }
+      });
+    }
+  }
+
   Future<void> _showTransactionOptions(Transaction txn) async {
     final categories = categoriesFrom(transactions);
 
     await showModalBottomSheet(
       context: context,
+      showDragHandle: true,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
       builder: (ctx) {
         return SafeArea(
           child: Wrap(
@@ -453,6 +511,7 @@ class _TransactionListScreenState extends State<TransactionListScreen>
   }
 
   // Day 33: the All / Received / Sent selector, shown under the summary card.
+  // Day 38: selected segment is filled navy; unselected sit on white.
   Widget _buildDirectionSelector() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -460,6 +519,14 @@ class _TransactionListScreenState extends State<TransactionListScreen>
         width: double.infinity,
         child: SegmentedButton<DirectionFilter>(
           showSelectedIcon: false,
+          style: SegmentedButton.styleFrom(
+            backgroundColor: Colors.white,
+            foregroundColor: Colors.grey.shade700,
+            selectedBackgroundColor: _navy,
+            selectedForegroundColor: Colors.white,
+            side: BorderSide(color: Colors.grey.shade300),
+            textStyle: const TextStyle(fontWeight: FontWeight.w600),
+          ),
           segments: const [
             ButtonSegment(
               value: DirectionFilter.all,
@@ -536,65 +603,85 @@ class _TransactionListScreenState extends State<TransactionListScreen>
   Widget _buildDrawer() {
     return Drawer(
       backgroundColor: const Color(0xFFFAFAF8),
-      child: SafeArea(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            Container(
-              padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
-              child: const Text(
-                'MY4',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w800,
-                  color: Color(0xFF2B2B2B),
-                  letterSpacing: 0.5,
-                ),
+      child: ListView(
+        padding: EdgeInsets.zero,
+        children: [
+          // Day 38: navy header instead of a plain title.
+          Container(
+            padding: EdgeInsets.fromLTRB(
+              20,
+              MediaQuery.of(context).padding.top + 28,
+              20,
+              24,
+            ),
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [_navy, _navySoft],
               ),
             ),
-            const Divider(height: 1),
-            const SizedBox(height: 8),
-            _drawerItem(
-              icon: Icons.show_chart,
-              label: 'Spending Trends',
-              color: const Color(0xFF6B8CAE),
-              onTap: _openTrendsScreen,
+            child: const Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'MY4',
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'Your money, in one place',
+                  style: TextStyle(color: Colors.white70, fontSize: 13),
+                ),
+              ],
             ),
-            _drawerItem(
-              icon: Icons.repeat,
-              label: 'Recurring',
-              color: const Color(0xFF9B7EBD),
-              onTap: _openRecurringScreen,
-            ),
-            _drawerItem(
-              icon: Icons.notifications_active_outlined,
-              label: 'Notification Reader',
-              color: const Color(0xFF5A8F6E),
-              onTap: _openNotificationReader,
-            ),
-            _drawerItem(
-              icon: Icons.sms_outlined,
-              label: 'SMS Reader',
-              color: const Color(0xFFC9A227),
-              onTap: _openSmsReaderScreen,
-            ),
-            const SizedBox(height: 8),
-            const Divider(height: 1),
-            const SizedBox(height: 8),
-            _drawerItem(
-              icon: Icons.account_balance_outlined,
-              label: 'Accounts & balance',
-              color: const Color(0xFF6C6FA8),
-              onTap: _openAccountsScreen,
-            ),
-            _drawerItem(
-              icon: Icons.ios_share,
-              label: 'Export data',
-              color: const Color(0xFF6E6E6E),
-              onTap: _openExportScreen,
-            ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 8),
+          _drawerItem(
+            icon: Icons.show_chart,
+            label: 'Spending Trends',
+            color: const Color(0xFF6B8CAE),
+            onTap: _openTrendsScreen,
+          ),
+          _drawerItem(
+            icon: Icons.repeat,
+            label: 'Recurring',
+            color: const Color(0xFF9B7EBD),
+            onTap: _openRecurringScreen,
+          ),
+          _drawerItem(
+            icon: Icons.notifications_active_outlined,
+            label: 'Notification Reader',
+            color: const Color(0xFF5A8F6E),
+            onTap: _openNotificationReader,
+          ),
+          _drawerItem(
+            icon: Icons.sms_outlined,
+            label: 'SMS Reader',
+            color: const Color(0xFFC9A227),
+            onTap: _openSmsReaderScreen,
+          ),
+          const SizedBox(height: 8),
+          const Divider(height: 1, indent: 20, endIndent: 20),
+          const SizedBox(height: 8),
+          _drawerItem(
+            icon: Icons.account_balance_outlined,
+            label: 'Accounts & balance',
+            color: const Color(0xFF6C6FA8),
+            onTap: _openAccountsScreen,
+          ),
+          _drawerItem(
+            icon: Icons.ios_share,
+            label: 'Export data',
+            color: const Color(0xFF6E6E6E),
+            onTap: _openExportScreen,
+          ),
+        ],
       ),
     );
   }
@@ -606,12 +693,13 @@ class _TransactionListScreenState extends State<TransactionListScreen>
     required VoidCallback onTap,
   }) {
     return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 2),
       leading: Container(
-        width: 36,
-        height: 36,
+        width: 38,
+        height: 38,
         decoration: BoxDecoration(
           color: color.withOpacity(0.14),
-          shape: BoxShape.circle,
+          borderRadius: BorderRadius.circular(12),
         ),
         child: Icon(icon, color: color, size: 20),
       ),
@@ -620,6 +708,171 @@ class _TransactionListScreenState extends State<TransactionListScreen>
         style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15),
       ),
       onTap: onTap,
+    );
+  }
+
+  // Day 38: one transaction row as a soft white card. Title stays on one
+  // line, the category is a small coloured pill, and the amount sits on the
+  // right next to the menu. Own-account transfers are drawn in grey.
+  Widget _buildTransactionRow(Transaction txn, List<String> categories) {
+    final isDebit = txn.type == TransactionType.debit;
+    final isTransferTx = txn.category == transferCategory;
+    final catColor = categoryColor(txn.category);
+    final amountColor =
+        isTransferTx ? _transferColor : (isDebit ? _debitColor : _creditColor);
+
+    // Day 36: each row shows the time of day, not just the date the section
+    // header groups by — needed to check the real order of same-day entries.
+    final time = '${txn.date.hour.toString().padLeft(2, '0')}:'
+        '${txn.date.minute.toString().padLeft(2, '0')}';
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(14, 0, 14, 8),
+      child: Material(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => _openTransactionDetail(txn, categories),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 2, 10),
+            child: Row(
+              children: [
+                Container(
+                  width: 42,
+                  height: 42,
+                  decoration: BoxDecoration(
+                    color: catColor.withOpacity(0.14),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    isDebit ? Icons.arrow_upward : Icons.arrow_downward,
+                    color: catColor,
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        txn.title,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 15,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        txn.source,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade600,
+                        ),
+                      ),
+                      const SizedBox(height: 5),
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 2,
+                              ),
+                              decoration: BoxDecoration(
+                                color: categorySoftColor(txn.category),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                txn.category,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                  color: categoryLabelColor(txn.category),
+                                ),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            time,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey.shade600,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  '${isDebit ? '-' : '+'}₹${txn.amount.toStringAsFixed(2)}',
+                  style: TextStyle(
+                    color: amountColor,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 15,
+                  ),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(
+                    minWidth: 36,
+                    minHeight: 36,
+                  ),
+                  padding: EdgeInsets.zero,
+                  icon: Icon(
+                    Icons.more_vert,
+                    size: 20,
+                    color: Colors.grey.shade600,
+                  ),
+                  onPressed: () => _showTransactionOptions(txn),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(String message) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 60,
+              height: 60,
+              decoration: BoxDecoration(
+                color: _accent.withOpacity(0.15),
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(
+                Icons.receipt_long_outlined,
+                size: 28,
+                color: _navySoft,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey.shade600),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -760,13 +1013,13 @@ class _TransactionListScreenState extends State<TransactionListScreen>
           const SizedBox(height: 8),
           if (isFiltered && filteredTransactions.isNotEmpty)
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              padding: const EdgeInsets.fromLTRB(18, 0, 16, 4),
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
                   _filteredSummaryText(filteredTransactions),
                   style: TextStyle(
-                    fontSize: 13,
+                    fontSize: 12.5,
                     fontWeight: FontWeight.w600,
                     color: Colors.grey.shade700,
                   ),
@@ -775,111 +1028,38 @@ class _TransactionListScreenState extends State<TransactionListScreen>
             ),
           Expanded(
             child: listItems.isEmpty
-                ? Center(
-                    child: Text(
-                      query.isNotEmpty
-                          ? 'No transactions match "$_searchQuery"'
-                          : (_direction == DirectionFilter.all
-                              ? 'No transactions in this category'
-                              : 'No transactions for this filter'),
-                    ),
+                ? _buildEmptyState(
+                    query.isNotEmpty
+                        ? 'No transactions match "$_searchQuery"'
+                        : (_direction == DirectionFilter.all
+                            ? 'No transactions in this category'
+                            : 'No transactions for this filter'),
                   )
                 : ListView.builder(
+                    // Extra bottom space so the floating buttons never cover
+                    // the last row.
+                    padding: const EdgeInsets.only(bottom: 120),
                     itemCount: listItems.length,
                     itemBuilder: (context, index) {
                       final item = listItems[index];
 
                       if (item is String) {
                         return Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                          padding: const EdgeInsets.fromLTRB(18, 14, 16, 8),
                           child: Text(
                             item,
-                            style: const TextStyle(
-                              fontSize: 13,
-                              fontWeight: FontWeight.w600,
-                              color: Colors.grey,
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.w700,
+                              letterSpacing: 0.3,
+                              color: Colors.grey.shade600,
                             ),
                           ),
                         );
                       }
 
                       final txn = item as Transaction;
-                      // Day 35: leading icon is now a soft category-colored
-                      // circle with the debit/credit arrow inside, instead
-                      // of a bare red/green arrow — ties each row visually
-                      // to its category chip and Category Summary color.
-                      final catColor = categoryColor(txn.category);
-                      return ListTile(
-                        onTap: () async {
-                          final updated = await Navigator.push<Transaction>(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) => TransactionDetailScreen(
-                                transaction: txn,
-                                existingCategories: categories,
-                              ),
-                            ),
-                          );
-
-                          if (updated != null) {
-                            await DatabaseHelper.instance
-                                .updateTransaction(updated);
-                            setState(() {
-                              final index = transactions
-                                  .indexWhere((t) => t.id == updated.id);
-                              if (index != -1) {
-                                transactions[index] = updated;
-                              }
-                            });
-                          }
-                        },
-                        leading: Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: catColor.withOpacity(0.14),
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(
-                            txn.type == TransactionType.debit
-                                ? Icons.arrow_upward
-                                : Icons.arrow_downward,
-                            color: catColor,
-                            size: 20,
-                          ),
-                        ),
-                        title: Text(
-                          txn.title,
-                          style: const TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        // Day 36: each row now also shows the time of day
-                        // (e.g. "14:05"), not just the date the section
-                        // header already groups by — needed to check the
-                        // real order of same-day transactions.
-                        subtitle: Text(
-                          '${txn.source} • ${txn.category} • '
-                          '${txn.date.hour.toString().padLeft(2, '0')}:'
-                          '${txn.date.minute.toString().padLeft(2, '0')}',
-                        ),
-                        trailing: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              '${txn.type == TransactionType.debit ? '-' : '+'}₹${txn.amount.toStringAsFixed(2)}',
-                              style: TextStyle(
-                                color: txn.type == TransactionType.debit
-                                    ? const Color(0xFFB5654A)
-                                    : const Color(0xFF5A8F6E),
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.more_vert),
-                              onPressed: () => _showTransactionOptions(txn),
-                            ),
-                          ],
-                        ),
-                      );
+                      return _buildTransactionRow(txn, categories);
                     },
                   ),
           ),
@@ -892,6 +1072,9 @@ class _TransactionListScreenState extends State<TransactionListScreen>
           FloatingActionButton.small(
             heroTag: 'quick_add',
             tooltip: 'Quick add',
+            backgroundColor: const Color(0xFFDDE5EF),
+            foregroundColor: _navy,
+            elevation: 1,
             onPressed: _openQuickAdd,
             child: const Icon(Icons.bolt),
           ),

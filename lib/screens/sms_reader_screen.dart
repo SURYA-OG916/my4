@@ -12,6 +12,15 @@ import '../utils/transfer_helper.dart';
 import 'add_transaction_screen.dart';
 import 'needs_review_screen.dart';
 
+// Day 38: same navy palette as the rest of the app.
+const Color _navy = Color(0xFF1F2A44);
+const Color _navySoft = Color(0xFF3B4A6B);
+const Color _accent = Color(0xFF6B8CAE);
+const Color _good = Color(0xFF5A8F6E);
+const Color _amber = Color(0xFFC9A227);
+
+String _two(int n) => n.toString().padLeft(2, '0');
+
 class SmsReaderScreen extends StatefulWidget {
   const SmsReaderScreen({super.key});
 
@@ -333,6 +342,7 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
 
     return Scaffold(
       appBar: AppBar(
+        centerTitle: false,
         title: const Text('SMS Reader'),
         actions: [
           IconButton(
@@ -345,24 +355,164 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
     );
   }
 
+  // ------------------------------------------------------------------ layout
+
+  Widget _statBox(String label, int value) {
+    return Expanded(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+        decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.10),
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                label,
+                style: const TextStyle(color: Colors.white70, fontSize: 11.5),
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              '$value',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSummaryCard(int flagged, int total) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(24),
+        gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [_navy, _navySoft],
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: _navy.withOpacity(0.25),
+            blurRadius: 18,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              _statBox('Auto-added', _autoAddedCount),
+              const SizedBox(width: 8),
+              _statBox('Account filled in', _enrichedCount),
+              const SizedBox(width: 8),
+              _statBox('Already processed', _skippedAlreadyProcessed),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'Likely transaction SMS: $flagged / $total total',
+            style: const TextStyle(color: Colors.white70, fontSize: 12.5),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildNeedsReviewCard() {
     final count = _needsReview.length;
-    return Card(
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      color: count > 0 ? Colors.orange.shade50 : null,
-      child: ListTile(
-        leading: Icon(
-          count > 0 ? Icons.warning_amber : Icons.check_circle_outline,
-          color: count > 0 ? Colors.orange : Colors.green,
-        ),
-        title: Text('Needs review ($count)'),
-        subtitle: Text(
-          count > 0
-              ? 'Messages MY4 could not add automatically. Tap to review.'
-              : 'Nothing waiting.',
-        ),
-        trailing: const Icon(Icons.chevron_right),
+    final hasItems = count > 0;
+    final color = hasItems ? _amber : _good;
+    final scheme = Theme.of(context).colorScheme;
+
+    return Material(
+      color: hasItems ? _amber.withOpacity(0.10) : Colors.white,
+      borderRadius: BorderRadius.circular(20),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(20),
         onTap: _openNeedsReviewPage,
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: hasItems
+                  ? _amber.withOpacity(0.4)
+                  : scheme.outlineVariant.withOpacity(0.6),
+            ),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(
+                  hasItems ? Icons.warning_amber : Icons.check_circle_outline,
+                  color: color,
+                  size: 22,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Needs review ($count)',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 15,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      hasItems
+                          ? 'Messages MY4 could not add automatically. Tap to review.'
+                          : 'Nothing waiting.',
+                      style: TextStyle(
+                        color: Colors.grey.shade600,
+                        fontSize: 12.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, color: Colors.grey.shade600),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionLabel(String text) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(6, 20, 6, 10),
+      child: Text(
+        text.toUpperCase(),
+        style: TextStyle(
+          color: Colors.grey.shade600,
+          fontSize: 11.5,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.2,
+        ),
       ),
     );
   }
@@ -371,17 +521,28 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
     if (_permissionDenied) {
       return Center(
         child: Padding(
-          padding: const EdgeInsets.all(24.0),
+          padding: const EdgeInsets.all(32.0),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
+              Container(
+                width: 64,
+                height: 64,
+                decoration: BoxDecoration(
+                  color: _amber.withOpacity(0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.sms_failed_outlined,
+                    size: 30, color: Color(0xFF8A6D0B)),
+              ),
+              const SizedBox(height: 16),
               const Text(
                 'SMS permission was denied. MY4 needs SMS read access '
                 'to auto-detect transactions.',
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 16),
-              ElevatedButton(
+              FilledButton(
                 onPressed: _requestPermissionAndLoad,
                 child: const Text('Grant Permission'),
               ),
@@ -400,46 +561,13 @@ class _SmsReaderScreenState extends State<SmsReaderScreen> {
     }
 
     return ListView(
+      padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
       children: [
-        Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Auto-added: $_autoAddedCount   •   '
-                'Account filled in: $_enrichedCount   •   '
-                'Already processed (skipped): $_skippedAlreadyProcessed',
-                style: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Likely transaction SMS: ${transactionLike.length} / '
-                '${_messages.length} total',
-                style: TextStyle(color: Colors.grey.shade700),
-              ),
-            ],
-          ),
-        ),
+        _buildSummaryCard(transactionLike.length, _messages.length),
         _buildNeedsReviewCard(),
-        const SizedBox(height: 8),
-        const Divider(thickness: 2),
-        Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Text(
-            'All flagged SMS (${transactionLike.length})',
-            style: const TextStyle(fontWeight: FontWeight.bold),
-          ),
-        ),
+        _sectionLabel('All flagged SMS (${transactionLike.length})'),
         ...transactionLike.map((msg) => _SmsTile(msg: msg, flagged: true)),
-        const Divider(thickness: 2),
-        Padding(
-          padding: const EdgeInsets.all(12.0),
-          child: Text(
-            'Other SMS (${other.length})',
-            style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.grey),
-          ),
-        ),
+        _sectionLabel('Other SMS (${other.length})'),
         ...other.map((msg) => _SmsTile(msg: msg, flagged: false)),
       ],
     );
@@ -454,24 +582,75 @@ class _SmsTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final date = msg.date != null
         ? DateTime.fromMillisecondsSinceEpoch(msg.date!)
         : null;
+    final color = flagged ? _good : Colors.grey.shade500;
 
-    return ListTile(
-      leading: Icon(
-        flagged ? Icons.account_balance_wallet : Icons.message_outlined,
-        color: flagged ? Colors.green : Colors.grey,
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 8),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+        side: BorderSide(color: scheme.outlineVariant.withOpacity(0.6)),
       ),
-      title: Text(msg.address ?? 'Unknown sender'),
-      subtitle: Text(
-        msg.body ?? '',
-        maxLines: 2,
-        overflow: TextOverflow.ellipsis,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: (flagged ? _good : _accent).withOpacity(0.15),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                flagged ? Icons.account_balance_wallet : Icons.message_outlined,
+                color: color,
+                size: 19,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    msg.address ?? 'Unknown sender',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14.5,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    msg.body ?? '',
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Colors.grey.shade700,
+                      fontSize: 12.5,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            if (date != null) ...[
+              const SizedBox(width: 8),
+              Text(
+                '${_two(date.day)}/${_two(date.month)}/${date.year}',
+                style: TextStyle(color: Colors.grey.shade600, fontSize: 11.5),
+              ),
+            ],
+          ],
+        ),
       ),
-      trailing: date != null
-          ? Text('${date.day}/${date.month}/${date.year}')
-          : null,
     );
   }
 }

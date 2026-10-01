@@ -8,6 +8,14 @@ import '../utils/notification_ingestor.dart';
 // payments (promotions, chats, rewards, failed payments) are hidden unless
 // you switch them on.
 
+// Day 38: same navy palette as the rest of the app.
+const Color _navy = Color(0xFF1F2A44);
+const Color _good = Color(0xFF5A8F6E);
+const Color _amber = Color(0xFFC9A227);
+const Color _amberDark = Color(0xFF8A6D0B);
+const Color _bad = Color(0xFFB5654A);
+const Color _muted = Color(0xFF6B6B6B);
+
 String _formatDateTime(int millis) {
   final d = DateTime.fromMillisecondsSinceEpoch(millis);
   String two(int n) => n.toString().padLeft(2, '0');
@@ -176,40 +184,104 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
     await _refresh();
   }
 
+  // ------------------------------------------------------------------ layout
+
+  RoundedRectangleBorder _cardShape() {
+    final scheme = Theme.of(context).colorScheme;
+    return RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(20),
+      side: BorderSide(color: scheme.outlineVariant.withOpacity(0.6)),
+    );
+  }
+
+  Widget _iconBadge(IconData icon, Color color, {double size = 42}) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.15),
+        shape: BoxShape.circle,
+      ),
+      child: Icon(icon, color: color, size: size * 0.5),
+    );
+  }
+
   Widget _buildStatusCard() {
+    final color = _enabled ? _good : _amber;
     return Card(
-      child: ListTile(
-        leading: Icon(
-          _enabled ? Icons.check_circle : Icons.error_outline,
-          color: _enabled ? Colors.green.shade700 : Colors.orange.shade800,
-          size: 32,
-        ),
-        title: Text(
-          _enabled ? 'Notification access is on' : 'Notification access is off',
-        ),
-        subtitle: Text(
-          _enabled
-              ? 'Listening to Google Pay, PhonePe, Paytm, BHIM, '
-                  'Samsung Wallet, WhatsApp Pay and Slice payments only.'
-              : "MY4 can't see UPI app notifications until you grant access.",
-        ),
-        trailing: FilledButton(
-          onPressed: _openSettings,
-          child: Text(_enabled ? 'Manage' : 'Enable'),
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 8),
+      shape: _cardShape(),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            _iconBadge(
+              _enabled ? Icons.check_circle : Icons.error_outline,
+              color,
+              size: 46,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _enabled
+                        ? 'Notification access is on'
+                        : 'Notification access is off',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 15,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    _enabled
+                        ? 'Listening to Google Pay, PhonePe, Paytm, BHIM, '
+                            'Samsung Wallet, WhatsApp Pay and Slice payments only.'
+                        : "MY4 can't see UPI app notifications until you grant access.",
+                    style: TextStyle(
+                      color: Colors.grey.shade600,
+                      fontSize: 12.5,
+                      height: 1.35,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            FilledButton(
+              onPressed: _openSettings,
+              child: Text(_enabled ? 'Manage' : 'Enable'),
+            ),
+          ],
         ),
       ),
     );
   }
 
   Widget _buildErrorCard() {
-    return Card(
-      color: Colors.red.shade50,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Text(
-          'Error: $_error',
-          style: TextStyle(color: Colors.red.shade900),
-        ),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _bad.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _bad.withOpacity(0.35)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.error_outline, size: 20, color: _bad),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Error: $_error',
+              style: const TextStyle(color: _bad),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -217,51 +289,64 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
   Widget _buildReviewTile(NotificationEntry entry) {
     final n = entry.notification;
     final approval = entry.awaitingApproval;
-    return Card(
-      color: Colors.orange.shade50,
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              n.title.isEmpty ? '(no title)' : n.title,
-              style: const TextStyle(fontWeight: FontWeight.w600),
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: _amber.withOpacity(0.10),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: _amber.withOpacity(0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            n.title.isEmpty ? '(no title)' : n.title,
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+          ),
+          if (n.text.isNotEmpty) ...[
+            const SizedBox(height: 2),
+            Text(n.text),
+          ],
+          const SizedBox(height: 4),
+          Text(
+            '${n.appLabel} • ${_formatDateTime(n.postTime)}',
+            style: TextStyle(color: Colors.grey.shade700, fontSize: 12),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            approval
+                ? 'Add this ${n.appLabel} payment? ${entry.parsed.summary}'
+                : '⚠ Possible duplicate: ${entry.parsed.summary}',
+            style: const TextStyle(
+              color: _amberDark,
+              fontWeight: FontWeight.w600,
             ),
-            if (n.text.isNotEmpty) Text(n.text),
-            Text(
-              '${n.appLabel} • ${_formatDateTime(n.postTime)}',
-              style: TextStyle(color: Colors.grey.shade700),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              approval
-                  ? 'Add this ${n.appLabel} payment? ${entry.parsed.summary}'
-                  : '⚠ Possible duplicate: ${entry.parsed.summary}',
-              style: TextStyle(
-                color: Colors.orange.shade900,
-                fontWeight: FontWeight.w600,
+          ),
+          for (final note in entry.duplicateNotes)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                note,
+                style: TextStyle(color: Colors.grey.shade800, fontSize: 12.5),
               ),
             ),
-            for (final note in entry.duplicateNotes)
-              Text(note, style: TextStyle(color: Colors.grey.shade800)),
-            const SizedBox(height: 8),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.end,
-              children: [
-                TextButton(
-                  onPressed: () => _dismiss(entry),
-                  child: const Text('Dismiss'),
-                ),
-                const SizedBox(width: 8),
-                FilledButton(
-                  onPressed: () => _addAnyway(entry),
-                  child: Text(approval ? 'Add' : 'Add anyway'),
-                ),
-              ],
-            ),
-          ],
-        ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              TextButton(
+                onPressed: () => _dismiss(entry),
+                child: const Text('Dismiss'),
+              ),
+              const SizedBox(width: 8),
+              FilledButton(
+                onPressed: () => _addAnyway(entry),
+                child: Text(approval ? 'Add' : 'Add anyway'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
@@ -274,23 +359,23 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
     switch (entry.status) {
       case NotificationStatus.added:
         statusText = '✓ Added: ${entry.parsed.summary}';
-        statusColor = Colors.green.shade800;
+        statusColor = _good;
         break;
       case NotificationStatus.alreadyHandled:
         statusText = '✓ Handled: ${entry.parsed.summary}';
-        statusColor = Colors.grey.shade700;
+        statusColor = _muted;
         break;
       case NotificationStatus.dismissed:
         statusText = '✗ Dismissed by you: ${entry.parsed.summary}';
-        statusColor = Colors.grey.shade700;
+        statusColor = _muted;
         break;
       case NotificationStatus.ignored:
         statusText = '✗ ${entry.parsed.summary}';
-        statusColor = Colors.orange.shade900;
+        statusColor = _amberDark;
         break;
       case NotificationStatus.needsReview:
         statusText = '⚠ ${entry.parsed.summary}';
-        statusColor = Colors.orange.shade900;
+        statusColor = _amberDark;
         break;
     }
 
@@ -300,44 +385,75 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
     final canUndo = entry.status == NotificationStatus.dismissed;
 
     return Card(
-      child: ListTile(
-        isThreeLine: true,
-        leading: const CircleAvatar(
-          child: Icon(Icons.notifications_outlined),
-        ),
-        title: Text(n.title.isEmpty ? '(no title)' : n.title),
-        subtitle: Column(
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 8),
+      shape: _cardShape(),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 6, 12),
+        child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(n.text.isEmpty ? '(no text)' : n.text),
-            Text('${n.appLabel} • ${_formatDateTime(n.postTime)}'),
-            const SizedBox(height: 4),
-            Text(
-              statusText,
-              style: TextStyle(
-                color: statusColor,
-                fontWeight: FontWeight.w600,
+            _iconBadge(Icons.notifications_outlined, statusColor, size: 40),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    n.title.isEmpty ? '(no title)' : n.title,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    n.text.isEmpty ? '(no text)' : n.text,
+                    style: TextStyle(
+                      color: Colors.grey.shade800,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${n.appLabel} • ${_formatDateTime(n.postTime)}',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 12),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    statusText,
+                    style: TextStyle(
+                      color: statusColor,
+                      fontWeight: FontWeight.w600,
+                      fontSize: 12.5,
+                    ),
+                  ),
+                ],
               ),
             ),
-          ],
-        ),
-        trailing: canUndo
-            ? IconButton(
+            if (canUndo)
+              IconButton(
                 icon: const Icon(Icons.undo),
                 tooltip: 'Undo dismiss',
                 onPressed: () => _undismiss(entry),
-              )
-            : null,
+              ),
+          ],
+        ),
       ),
     );
   }
 
   Widget _sectionHeader(String label) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
+      padding: const EdgeInsets.fromLTRB(6, 18, 6, 10),
       child: Text(
-        label,
-        style: Theme.of(context).textTheme.titleMedium,
+        label.toUpperCase(),
+        style: TextStyle(
+          color: Colors.grey.shade600,
+          fontSize: 11.5,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.2,
+        ),
       ),
     );
   }
@@ -353,6 +469,7 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
 
     return Scaffold(
       appBar: AppBar(
+        centerTitle: false,
         title: const Text('Notification Reader'),
         actions: [
           IconButton(
@@ -370,7 +487,7 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : ListView(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.fromLTRB(14, 8, 14, 24),
               children: [
                 _buildStatusCard(),
                 if (_error != null) _buildErrorCard(),
@@ -380,12 +497,13 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
                 ],
                 _sectionHeader('Payments (${handled.length})'),
                 if (handled.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(16),
+                  Padding(
+                    padding: const EdgeInsets.all(16),
                     child: Text(
                       'No payment notifications yet. Once access is on, '
                       'payments from supported UPI apps will show up here '
                       'and be added to your transactions.',
+                      style: TextStyle(color: Colors.grey.shade600),
                     ),
                   )
                 else
@@ -393,7 +511,10 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
                 if (ignored.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Card(
+                    elevation: 0,
+                    shape: _cardShape(),
                     child: SwitchListTile(
+                      activeColor: _navy,
                       title: Text('Show ignored (${ignored.length})'),
                       subtitle: const Text(
                         'Promotions, rewards, failed or pending payments, and '
@@ -406,6 +527,7 @@ class _NotificationReaderScreenState extends State<NotificationReaderScreen>
                       },
                     ),
                   ),
+                  const SizedBox(height: 8),
                   if (_showIgnored) ...ignored.map(_buildTile),
                 ],
               ],
